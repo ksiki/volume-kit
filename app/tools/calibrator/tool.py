@@ -5,7 +5,8 @@ from typing import Any, Callable, cast
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QWidget
 
-from app.core.tools import BaseTool, GlobalActionHandle, ToolContext, register_tool
+from app.core.logging_setup import log_event
+from app.core.tools import BaseTool, ToolContext, register_tool
 from app.tools.calibrator.page import CalibratorPage
 from app.ui.workers.calibration_worker import CalibrationWorker
 
@@ -27,12 +28,6 @@ class CalibratorTool(BaseTool):
         self._unsubscribe_logs: Callable[[], None] | None = None
 
         context.commands.register("calibration.start", self.start_calibration)
-        self._recalc_action: GlobalActionHandle = context.host.add_global_action(
-            "calibrator.recalc",
-            "↻ Пересчитать",
-            "Перечитать config.json и обновить расчёт Calibrator",
-            lambda: self.start_calibration(reload_cfg=True),
-        )
 
     @property
     def page(self) -> CalibratorPage:
@@ -60,15 +55,11 @@ class CalibratorTool(BaseTool):
             return
 
         page = self.page
+        symbol = self.context.host.current_symbol
+        log_event("run_start", f"Запуск расчёта · {symbol}", tool="Calibrator")
 
-        if reload_cfg:
-            self.context.host.clear_logs()
-            page.clear_mini_logs()
-
-        self._recalc_action.set_enabled(False)
-        self.context.host.set_status("running", "Расчёт 0%")
         page.set_running(
-            symbol=self.context.host.current_symbol,
+            symbol=symbol,
             progress=2,
             stage="Чтение config.json..." if reload_cfg else "Запуск калибратора...",
         )
@@ -84,7 +75,6 @@ class CalibratorTool(BaseTool):
         worker.start()
 
     def _on_calc_progress(self, pct: int, stage: str) -> None:
-        self.context.host.set_status("running", f"Расчёт {pct}%")
         self.page.update_progress(pct, stage)
 
     def _on_symbol_changed(self, symbol: str) -> None:
@@ -97,17 +87,10 @@ class CalibratorTool(BaseTool):
         # Если live-цена ещё не успела прийти, показываем референсную спот-цену из отчёта
         self.context.host.show_reference_price(report.get("spot_ref_price"))
 
-        elapsed = report.get("elapsed_sec", 0)
-        updated_at = report.get("updated_at", "")
-        self.context.host.set_status("done", f"Готово за {elapsed}с · {updated_at}")
-
         self.page.set_report(report)
-        self._recalc_action.set_enabled(True)
 
     def _on_calc_failed(self, err_msg: str) -> None:
-        self.context.host.set_status("error", "Ошибка расчёта")
         self.page.set_error(err_msg)
-        self._recalc_action.set_enabled(True)
 
     def _on_worker_cleanup(self) -> None:
         if self._worker is not None:

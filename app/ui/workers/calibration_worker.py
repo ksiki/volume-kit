@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 from app.core.config import ConfigService, get_config_service
 from app.services.calibration import run_calibration
 
-log = logging.getLogger("Backend")
+log = logging.getLogger(__name__)
 
 
 class CalibrationWorker(QThread):
@@ -45,5 +45,5 @@ class CalibrationWorker(QThread):
             self.finished_ok.emit(bundle.report)
 
         except Exception as exc:
-            log.exception(f"Ошибка калибровки: {exc}")
+            log.exception(f"Ошибка калибровки: {exc}", extra={"tool": "Calibrator"})
             self.failed.emit(str(exc))

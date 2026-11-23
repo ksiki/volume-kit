@@ -4,6 +4,7 @@ old_versions
 app/data_cache
 app/web_profile
 app/config.json
+app/logs/
 __pycache__
 
 # Byte-compiled / optimized / DLL files

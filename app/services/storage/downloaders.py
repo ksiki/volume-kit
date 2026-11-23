@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-log = logging.getLogger("Storage")
+log = logging.getLogger(__name__)
 
 
 _thread_local = threading.local()

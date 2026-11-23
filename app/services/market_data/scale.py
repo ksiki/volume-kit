@@ -12,7 +12,7 @@ from app.services.market_data.binance import _fetch_binance_spot_klines
 from app.services.market_data.bybit import _fetch_bybit_futures_klines
 from app.services.market_data.models import MarketScaleInfo
 
-log = logging.getLogger("MarketData")
+log = logging.getLogger(__name__)
 
 
 def round_scale(value: float, settings: AppSettings) -> int:

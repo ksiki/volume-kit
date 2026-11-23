@@ -21,7 +21,7 @@ from app.services.market_data import (
 )
 from app.services.storage import ensure_days_cached, get_utc_dates
 
-log = logging.getLogger("Main")
+log = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, str], None]
 

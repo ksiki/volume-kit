@@ -1,13 +1,10 @@
 """Фоновый опрос цены Binance Spot."""
 
-import logging
 import threading
 
 from PySide6.QtCore import QObject, QThread, Signal
 
 from app.services.spot_price import fetch_binance_spot_price
-
-log = logging.getLogger("Backend")
 
 
 class SpotPricePoller(QThread):

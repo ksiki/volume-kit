@@ -17,7 +17,7 @@ from app.services.analytics.weighting import (
     _get_half_life_days,
 )
 
-log = logging.getLogger("Analytics")
+log = logging.getLogger(__name__)
 
 
 def analyze_timeframe(

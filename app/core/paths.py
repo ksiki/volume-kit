@@ -16,6 +16,7 @@ CONFIG_PATH = BASE_DIR / "config.json"
 CACHE_DIR = BASE_DIR / "data_cache"
 OUTPUT_DIR = BASE_DIR / "output"
 WEB_PROFILE_DIR = BASE_DIR / "web_profile"
+LOGS_DIR = BASE_DIR / "logs"
 
 
 def _assets_candidates() -> list[Path]:
@@ -51,6 +52,15 @@ def icon_path() -> Path | None:
         candidates.append(legacy_root / "app" / "icon.png")
 
     for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def logo_path() -> Path | None:
+    """Находит logo.svg в assets/ (dev / PyInstaller)."""
+    for directory in _assets_candidates():
+        path = directory / "logo.svg"
         if path.is_file():
             return path
     return None

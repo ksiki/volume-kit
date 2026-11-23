@@ -1,5 +1,7 @@
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCursor, QMouseEvent
+from pathlib import Path
+
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QCursor, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -11,6 +13,11 @@ from PySide6.QtWidgets import (
 )
 
 from .theme import PALETTE
+
+try:
+    from PySide6.QtSvg import QSvgRenderer
+except ImportError:  # pragma: no cover - QtSvg входит в стандартный PySide6
+    QSvgRenderer = None  # type: ignore[assignment,misc]
 
 
 def copy_to_clipboard(value: str) -> None:
@@ -191,3 +198,33 @@ class ToastNotification(QLabel):
         x = max(margin_x, parent.width() - self.width() - margin_x)
         y = max(margin_y, parent.height() - self.height() - margin_y)
         self.move(x, y)
+
+
+class LogoMark(QWidget):
+    """Векторный логотип приложения с чётким рендером на HiDPI."""
+
+    def __init__(
+        self,
+        svg_path: Path | None,
+        size: int = 36,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._renderer = None
+        if svg_path is not None and QSvgRenderer is not None:
+            renderer = QSvgRenderer(str(svg_path))
+            if renderer.isValid():
+                self._renderer = renderer
+        self.setFixedSize(size, size)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt API
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(0, 0, self.width(), self.height())
+        if self._renderer is not None:
+            self._renderer.render(painter, rect)
+            return
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#2563EB"))
+        radius = self.width() * 0.28
+        painter.drawRoundedRect(rect, radius, radius)

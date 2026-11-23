@@ -7,7 +7,7 @@ import pandas as pd
 
 from app.core.config import AppSettings
 
-log = logging.getLogger("Analytics")
+log = logging.getLogger(__name__)
 
 
 def _get_half_life_days(timeframe_min: int, total_days: int, settings: AppSettings) -> float:

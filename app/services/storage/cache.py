@@ -13,7 +13,7 @@ from app.services.storage.downloaders import (
     _download_and_cache_bybit_day,
 )
 
-log = logging.getLogger("Storage")
+log = logging.getLogger(__name__)
 
 
 def get_utc_dates(days: int) -> list[str]:

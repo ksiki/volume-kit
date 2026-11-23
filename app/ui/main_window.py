@@ -20,10 +20,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.config import ConfigService, get_config_service
-from app.core.tools import BaseTool, CommandBus, GlobalActionHandle, ToolContext, ToolRegistry
+from app.core.paths import logo_path
+from app.core.tools import BaseTool, CommandBus, ToolContext, ToolRegistry
 from app.ui.log_bridge import QtLogBridge, install_qt_logging
 from app.ui.logs_panel import LogsPanel
-from app.ui.widgets import ExchangeDot, ToastNotification, repolish
+from app.ui.widgets import ExchangeDot, LogoMark, ToastNotification, repolish
 from app.ui.workers.spot_price_poller import SpotPricePoller
 
 SPOT_PRICE_REFRESH_SEC = 2.0
@@ -44,38 +45,6 @@ def _format_price(val: Any) -> str:
     return f"{num:,.6f}"
 
 
-class GlobalAction:
-    """Кнопка глобального действия в шапке окна, управляемая инструментом."""
-
-    def __init__(
-        self,
-        layout: QHBoxLayout,
-        label: str,
-        tooltip: str,
-        callback: Callable[[], None],
-    ) -> None:
-        self._layout = layout
-        self.button = QPushButton(label)
-        self.button.setObjectName("PrimaryBtn")
-        self.button.setFixedHeight(32)
-        self.button.setToolTip(tooltip)
-        self.button.clicked.connect(lambda _checked=False: callback())
-        self._layout.addWidget(self.button, 0, Qt.AlignmentFlag.AlignVCenter)
-
-    def set_enabled(self, enabled: bool) -> None:
-        self.button.setEnabled(enabled)
-
-    def set_text(self, text: str) -> None:
-        self.button.setText(text)
-
-    def set_tooltip(self, text: str) -> None:
-        self.button.setToolTip(text)
-
-    def remove(self) -> None:
-        self._layout.removeWidget(self.button)
-        self.button.deleteLater()
-
-
 class MainWindow(QMainWindow):
     """Главное окно приложения Volume Kit."""
 
@@ -91,7 +60,6 @@ class MainWindow(QMainWindow):
 
         self._tools: dict[str, BaseTool] = {}
         self._commands = CommandBus()
-        self._global_actions: dict[str, GlobalAction] = {}
         self._nav_buttons: dict[str, QPushButton] = {}
         self._page_indices: dict[str, int] = {}
         self._shown_tools: set[str] = set()
@@ -171,10 +139,7 @@ class MainWindow(QMainWindow):
         brand_row.setContentsMargins(4, 2, 4, 8)
         brand_row.setSpacing(10)
 
-        logo = QLabel("VK")
-        logo.setObjectName("BrandLogo")
-        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo.setFixedSize(36, 36)
+        logo = LogoMark(logo_path(), size=36)
 
         brand_text = QVBoxLayout()
         brand_text.setContentsMargins(0, 0, 0, 0)
@@ -268,18 +233,6 @@ class MainWindow(QMainWindow):
         spot_lay.addWidget(spot_tag, 0, Qt.AlignmentFlag.AlignVCenter)
         spot_lay.addWidget(self._spot_price_val_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self._status_pill = QLabel("Запуск...")
-        self._status_pill.setObjectName("StatusPill")
-        self._status_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_pill.setFixedHeight(32)
-        self._status_pill.setProperty("status", "running")
-        repolish(self._status_pill)
-
-        # Сюда инструменты добавляют свои глобальные кнопки
-        self._actions_layout = QHBoxLayout()
-        self._actions_layout.setContentsMargins(0, 0, 0, 0)
-        self._actions_layout.setSpacing(10)
-
         self._logs_btn = QPushButton("Логи (0)")
         self._logs_btn.setObjectName("SecondaryBtn")
         self._logs_btn.setFixedHeight(32)
@@ -290,14 +243,12 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._symbol_pill, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addWidget(self._spot_price_pill, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addStretch(1)
-        lay.addWidget(self._status_pill, 0, Qt.AlignmentFlag.AlignVCenter)
-        lay.addLayout(self._actions_layout)
         lay.addWidget(self._logs_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         return topbar
 
     def _create_tools(self) -> None:
-        """Создаёт экземпляры всех инструментов: команды и кнопки регистрируются сразу."""
+        """Создаёт экземпляры всех инструментов: команды регистрируются сразу, виджеты — лениво."""
         context = ToolContext(config=self._config, host=self, commands=self._commands)
         for tool_cls in self._tool_classes:
             self._tools[tool_cls.tool_id] = tool_cls(context)
@@ -354,14 +305,6 @@ class MainWindow(QMainWindow):
     def open_logs(self) -> None:
         self._logs_panel.show()
 
-    def clear_logs(self) -> None:
-        self._logs_panel.clear_logs()
-
-    def set_status(self, status_key: str, text: str) -> None:
-        self._status_pill.setProperty("status", status_key)
-        self._status_pill.setText(text)
-        repolish(self._status_pill)
-
     def set_symbol(self, symbol: str) -> None:
         clean = str(symbol).strip().upper()
         if not clean:
@@ -393,19 +336,6 @@ class MainWindow(QMainWindow):
                 pass
 
         return _unsubscribe
-
-    def add_global_action(
-        self,
-        key: str,
-        label: str,
-        tooltip: str,
-        callback: Callable[[], None],
-    ) -> GlobalActionHandle:
-        if key in self._global_actions:
-            raise ValueError(f"Глобальное действие уже зарегистрировано: {key}")
-        action = GlobalAction(self._actions_layout, label, tooltip, callback)
-        self._global_actions[key] = action
-        return action
 
     # ==================== LIVE ЦЕНА BINANCE SPOT ====================
 

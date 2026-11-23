@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Volume Kit">
+  <defs>
+    <linearGradient id="vk-bg" x1="24" y1="24" x2="232" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="vk-bar" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#BFDBFE" stop-opacity="0.78"/>
+      <stop offset="1" stop-color="#EFF6FF" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="vk-accent" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#A5F3FC"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#vk-bg)"/>
+  <rect x="52" y="188" width="152" height="6" rx="3" fill="#FFFFFF" fill-opacity="0.18"/>
+  <rect x="59" y="130" width="24" height="58" rx="8" fill="url(#vk-bar)"/>
+  <rect x="97" y="92" width="24" height="96" rx="8" fill="url(#vk-bar)"/>
+  <rect x="135" y="56" width="24" height="132" rx="8" fill="url(#vk-accent)"/>
+  <rect x="173" y="116" width="24" height="72" rx="8" fill="url(#vk-bar)"/>
+  <circle cx="147" cy="86" r="10" fill="#0F172A" fill-opacity="0.22"/>
+  <circle cx="147" cy="86" r="7" fill="#FFFFFF"/>
+  <circle cx="147" cy="86" r="3" fill="#0891B2"/>
+</svg>

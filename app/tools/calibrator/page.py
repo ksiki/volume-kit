@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.ui.widgets import ExchangeDot, MetricBox, TfBadge, ThresholdButton
+from app.ui.widgets import ExchangeDot, MetricBox, TfBadge, ThresholdButton, repolish
 
 
 class ScaleTile(QFrame):
@@ -274,43 +274,6 @@ class CalibratorPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Тонкий баннер прогресса при пересчёте поверх существующих данных
-        self._top_banner = QFrame()
-        self._top_banner.setObjectName("ProgressBanner")
-        self._top_banner.hide()
-
-        banner_lay = QVBoxLayout(self._top_banner)
-        banner_lay.setContentsMargins(24, 10, 24, 10)
-        banner_lay.setSpacing(6)
-
-        banner_top = QHBoxLayout()
-        banner_top.setSpacing(12)
-
-        self._banner_stage = QLabel("Обновление данных...")
-        self._banner_stage.setStyleSheet("font-weight: 600; font-size: 12.5px; color: #1D4ED8;")
-
-        self._banner_log = QLabel("")
-        self._banner_log.setObjectName("ScaleMeta")
-        self._banner_log.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        btn_banner_logs = QPushButton("Логи")
-        btn_banner_logs.setObjectName("FilterChip")
-        btn_banner_logs.clicked.connect(self.open_logs_requested.emit)
-
-        banner_top.addWidget(self._banner_stage)
-        banner_top.addStretch(1)
-        banner_top.addWidget(self._banner_log)
-        banner_top.addWidget(btn_banner_logs)
-
-        self._banner_progress = QProgressBar()
-        self._banner_progress.setObjectName("ThinProgress")
-        self._banner_progress.setRange(0, 100)
-        self._banner_progress.setTextVisible(False)
-
-        banner_lay.addLayout(banner_top)
-        banner_lay.addWidget(self._banner_progress)
-        root.addWidget(self._top_banner)
-
         # Стек состояний: 0 = загрузка, 1 = ошибка (без данных), 2 = дашборд
         self._stack = QStackedWidget()
         root.addWidget(self._stack, 1)
@@ -459,6 +422,8 @@ class CalibratorPage(QWidget):
         eb_lay.addWidget(self._dash_error_lbl, 1)
         self._dash_root.addWidget(self._dash_error_banner)
 
+        self._dash_root.addWidget(self._build_controls())
+
         # Сетка карточек стратегий (2 колонки)
         self._cards_wrap = QWidget()
         self._cards_opacity = QGraphicsOpacityEffect(self._cards_wrap)
@@ -476,18 +441,51 @@ class CalibratorPage(QWidget):
         scroll.setWidget(container)
         self._stack.addWidget(scroll)
 
+    def _build_controls(self) -> QFrame:
+        bar = QFrame()
+        bar.setObjectName("CalibControls")
+
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(16, 10, 16, 10)
+        lay.setSpacing(12)
+
+        self._status_lbl = QLabel("Готово")
+        self._status_lbl.setObjectName("CalibStatusLabel")
+        self._status_lbl.setProperty("status", "done")
+        repolish(self._status_lbl)
+
+        self._progress = QProgressBar()
+        self._progress.setObjectName("ThinProgress")
+        self._progress.setRange(0, 100)
+        self._progress.setTextVisible(False)
+        self._progress.setFixedWidth(180)
+        self._progress.hide()
+
+        self._recalc_btn = QPushButton("↻ Пересчитать")
+        self._recalc_btn.setObjectName("PrimaryBtn")
+        self._recalc_btn.setFixedHeight(32)
+        self._recalc_btn.setToolTip("Перечитать config.json и обновить расчёт Calibrator")
+        self._recalc_btn.clicked.connect(self.recalc_requested.emit)
+
+        lay.addWidget(self._status_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self._progress, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addStretch(1)
+        lay.addWidget(self._recalc_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        return bar
+
     # ==================== ПУБЛИЧНЫЕ МЕТОДЫ СОСТОЯНИЯ ====================
 
     def set_running(self, symbol: str, progress: int, stage: str) -> None:
         self._dash_error_banner.hide()
+        self._recalc_btn.setEnabled(False)
+
         if self._has_report:
-            self._top_banner.show()
-            self._banner_stage.setText(f"{stage} ({progress}%)")
-            self._banner_progress.setValue(progress)
+            self._set_status("running", stage)
+            self._progress.setValue(progress)
+            self._progress.show()
             self._cards_opacity.setOpacity(0.6)
             self._stack.setCurrentIndex(2)
         else:
-            self._top_banner.hide()
             self._load_title.setText(f"Калибровка {symbol}")
             self._load_pct.setText(f"{progress}%")
             self._load_progress.setValue(progress)
@@ -496,8 +494,8 @@ class CalibratorPage(QWidget):
 
     def update_progress(self, progress: int, stage: str) -> None:
         if self._has_report:
-            self._banner_stage.setText(f"{stage} ({progress}%)")
-            self._banner_progress.setValue(progress)
+            self._set_status("running", stage)
+            self._progress.setValue(progress)
         else:
             self._load_pct.setText(f"{progress}%")
             self._load_progress.setValue(progress)
@@ -506,16 +504,11 @@ class CalibratorPage(QWidget):
     def set_symbol(self, symbol: str) -> None:
         self._load_title.setText(f"Калибровка {symbol}")
 
-    def clear_mini_logs(self) -> None:
-        self._mini_log.clear()
-        self._banner_log.setText("")
-
     def append_log_entry(self, entry: dict[str, Any]) -> None:
         t = html.escape(str(entry.get("time", "")))
         logger_name = html.escape(str(entry.get("logger", "")))
         msg = html.escape(str(entry.get("message", "")))
 
-        self._banner_log.setText(f"[{entry.get('logger', '')}] {entry.get('message', '')}")
         self._mini_log.appendHtml(
             f'<span style="color:#64748B;">{t}</span> '
             f'<span style="color:#6366F1;">[{logger_name}]</span> '
@@ -527,9 +520,10 @@ class CalibratorPage(QWidget):
 
     def set_report(self, report: dict[str, Any]) -> None:
         self._has_report = True
-        self._top_banner.hide()
         self._dash_error_banner.hide()
         self._cards_opacity.setOpacity(1.0)
+        self._progress.hide()
+        self._recalc_btn.setEnabled(True)
 
         # Очищаем прошлые карточки
         while self._cards_grid.count():
@@ -544,11 +538,20 @@ class CalibratorPage(QWidget):
             self._cards_grid.addWidget(card, 0, idx, Qt.AlignmentFlag.AlignTop)
             self._cards_grid.setColumnStretch(idx, 1)
 
+        elapsed = report.get("elapsed_sec", 0)
+        updated_at = report.get("updated_at", "")
+        status_text = f"Готово за {elapsed}с"
+        if updated_at:
+            status_text += f" · {updated_at}"
+        self._set_status("done", status_text)
+
         self._stack.setCurrentIndex(2)
 
     def set_error(self, error_msg: str) -> None:
-        self._top_banner.hide()
+        self._progress.hide()
         self._cards_opacity.setOpacity(1.0)
+        self._recalc_btn.setEnabled(True)
+        self._set_status("error", "Ошибка расчёта")
 
         if self._has_report:
             self._dash_error_lbl.setText(f"Ошибка пересчёта: {error_msg}")
@@ -557,3 +560,8 @@ class CalibratorPage(QWidget):
         else:
             self._error_full_lbl.setText(error_msg)
             self._stack.setCurrentIndex(1)
+
+    def _set_status(self, status_key: str, text: str) -> None:
+        self._status_lbl.setProperty("status", status_key)
+        self._status_lbl.setText(text)
+        repolish(self._status_lbl)

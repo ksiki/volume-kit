@@ -39,18 +39,6 @@ class CommandBus:
         return handler(*args, **kwargs)
 
 
-class GlobalActionHandle(Protocol):
-    """Кнопка глобального действия в шапке окна, которой управляет инструмент."""
-
-    def set_enabled(self, enabled: bool) -> None: ...
-
-    def set_text(self, text: str) -> None: ...
-
-    def set_tooltip(self, text: str) -> None: ...
-
-    def remove(self) -> None: ...
-
-
 class ToolHost(Protocol):
     """Интерфейс главного окна, который видят инструменты."""
 
@@ -61,10 +49,6 @@ class ToolHost(Protocol):
 
     def open_logs(self) -> None: ...
 
-    def clear_logs(self) -> None: ...
-
-    def set_status(self, status_key: str, text: str) -> None: ...
-
     def set_symbol(self, symbol: str) -> None: ...
 
     def show_reference_price(self, value: Any) -> None: ...
@@ -72,14 +56,6 @@ class ToolHost(Protocol):
     def switch_tool(self, tool_id: str) -> None: ...
 
     def subscribe_logs(self, callback: LogCallback) -> Callable[[], None]: ...
-
-    def add_global_action(
-        self,
-        key: str,
-        label: str,
-        tooltip: str,
-        callback: Callable[[], None],
-    ) -> GlobalActionHandle: ...
 
 
 @dataclass

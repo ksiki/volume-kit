@@ -97,15 +97,6 @@ QFrame#Sidebar {{
     border-right: 1px solid {PALETTE["border"]};
 }}
 
-QLabel#BrandLogo {{
-    background-color: {PALETTE["accent"]};
-    color: #FFFFFF;
-    border-radius: 9px;
-    font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
-    font-size: 14px;
-    font-weight: 800;
-}}
-
 QLabel#BrandTitle {{
     font-size: 16px;
     font-weight: 800;
@@ -213,28 +204,23 @@ QLabel#RefPriceChip {{
     color: {PALETTE["text_secondary"]};
 }}
 
-QLabel#StatusPill {{
-    border-radius: 7px;
-    padding: 0 11px;
-    font-size: 12px;
-    font-weight: 600;
-    background-color: {PALETTE["surface_alt"]};
+QFrame#CalibControls {{
+    background-color: #FFFFFF;
     border: 1px solid {PALETTE["border"]};
-    color: {PALETTE["text_secondary"]};
+    border-radius: 8px;
 }}
-QLabel#StatusPill[status="running"] {{
-    background-color: #EFF6FF;
-    border: 1px solid #BFDBFE;
+QLabel#CalibStatusLabel {{
+    color: {PALETTE["text_secondary"]};
+    font-size: 12.5px;
+    font-weight: 600;
+}}
+QLabel#CalibStatusLabel[status="running"] {{
     color: #1D4ED8;
 }}
-QLabel#StatusPill[status="done"] {{
-    background-color: #F0FDF4;
-    border: 1px solid #BBF7D0;
+QLabel#CalibStatusLabel[status="done"] {{
     color: #15803D;
 }}
-QLabel#StatusPill[status="error"] {{
-    background-color: #FEF2F2;
-    border: 1px solid #FECACA;
+QLabel#CalibStatusLabel[status="error"] {{
     color: #B91C1C;
 }}
 
@@ -309,12 +295,6 @@ QPushButton#FilterChip[active="true"] {{
     background-color: {PALETTE["accent_soft"]};
     border-color: {PALETTE["accent_border"]};
     color: {PALETTE["accent_hover"]};
-}}
-
-/* ==================== ПРОГРЕСС-БАННЕР ==================== */
-QFrame#ProgressBanner {{
-    background-color: #FFFFFF;
-    border-bottom: 1px solid {PALETTE["border"]};
 }}
 
 QProgressBar#ThinProgress {{

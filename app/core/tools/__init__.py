@@ -3,7 +3,6 @@
 from app.core.tools.base import (
     BaseTool,
     CommandBus,
-    GlobalActionHandle,
     LogCallback,
     ToolContext,
     ToolHost,
@@ -13,7 +12,6 @@ from app.core.tools.registry import ToolRegistry, get_default_registry, register
 __all__ = [
     "BaseTool",
     "CommandBus",
-    "GlobalActionHandle",
     "LogCallback",
     "ToolContext",
     "ToolHost",
