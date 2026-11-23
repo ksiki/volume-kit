@@ -38,10 +38,10 @@ if __name__ == "__main__":
 
     try:
         if cli_mode:
-            from app.main import main
+            from app.cli import main
             main()
         else:
-            from app.gui import start_gui
+            from app.bootstrap import start_gui
             start_gui()
     except Exception:
         tb = traceback.format_exc()

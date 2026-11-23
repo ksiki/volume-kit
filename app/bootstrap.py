@@ -1,6 +1,7 @@
+"""Единая точка запуска GUI Volume Kit."""
+
 import os
 import sys
-from pathlib import Path
 
 # Глушим лишние служебные сообщения Chromium в консоли
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--log-level=3")
@@ -15,29 +16,17 @@ try:
 except ImportError:
     pass
 
-from .ui.main_window import MainWindow
-from .ui.theme import APP_STYLESHEET, FONT_FAMILY_UI
-
-
-def _get_icon_path() -> Path | None:
-    """Находит icon.png в сборке PyInstaller (_MEIPASS / рядом с .exe) или в корне проекта."""
-    candidates: list[Path] = []
-    if getattr(sys, "frozen", False):
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            candidates.append(Path(meipass) / "icon.png")
-        candidates.append(Path(sys.executable).resolve().parent / "icon.png")
-    else:
-        candidates.append(Path(__file__).resolve().parent.parent / "icon.png")
-        candidates.append(Path(__file__).resolve().parent / "icon.png")
-
-    for path in candidates:
-        if path.is_file():
-            return path
-    return None
+from app.core.config import get_config_service
+from app.core.logging_setup import configure_logging
+from app.core.paths import icon_path
+from app.tools import register_builtin_tools
+from app.ui.main_window import MainWindow
+from app.ui.theme import APP_STYLESHEET, FONT_FAMILY_UI
 
 
 def start_gui() -> None:
+    configure_logging(console=True)
+
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
 
     app = QApplication(sys.argv)
@@ -47,9 +36,9 @@ def start_gui() -> None:
     app.setStyle("Fusion")
 
     app_icon = QIcon()
-    icon_path = _get_icon_path()
-    if icon_path is not None:
-        app_icon = QIcon(str(icon_path))
+    path = icon_path()
+    if path is not None:
+        app_icon = QIcon(str(path))
         if not app_icon.isNull():
             app.setWindowIcon(app_icon)
 
@@ -59,7 +48,8 @@ def start_gui() -> None:
 
     app.setStyleSheet(APP_STYLESHEET)
 
-    window = MainWindow()
+    registry = register_builtin_tools()
+    window = MainWindow(registry, get_config_service())
     if not app_icon.isNull():
         window.setWindowIcon(app_icon)
     window.showMaximized()

@@ -1,5 +1,7 @@
+"""Главное окно Volume Kit: оболочка, навигация и сервисы для инструментов."""
+
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QKeyEvent, QResizeEvent
@@ -17,19 +19,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import config as app_config
-from .backend import CalibrationWorker, QtLogBridge, SpotPricePoller, install_qt_logging
-from .calibrator_page import CalibratorPage
-from .logs_panel import LogsPanel
-from .settings_page import SettingsPage
-from .web_tool_page import WebToolPage
-from .widgets import ExchangeDot, ToastNotification, repolish
-
-COINGLASS_LIQ_URL = "https://www.coinglass.com/ru/LiquidationHeatMap/BTC?pair=Binance_BTCUSDT"
-COINGLASS_LIQ_CLASS = "liq-heatmap_chartPanel__5Sby3"
-
-COINGLASS_OB_URL = "https://www.coinglass.com/LiquidityHeatmap/BTC"
-COINGLASS_OB_CLASS = "ChartCard_card__wWOwA"
+from app.core.config import ConfigService, get_config_service
+from app.core.tools import BaseTool, CommandBus, GlobalActionHandle, ToolContext, ToolRegistry
+from app.ui.log_bridge import QtLogBridge, install_qt_logging
+from app.ui.logs_panel import LogsPanel
+from app.ui.widgets import ExchangeDot, ToastNotification, repolish
+from app.ui.workers.spot_price_poller import SpotPricePoller
 
 SPOT_PRICE_REFRESH_SEC = 2.0
 
@@ -49,21 +44,59 @@ def _format_price(val: Any) -> str:
     return f"{num:,.6f}"
 
 
+class GlobalAction:
+    """Кнопка глобального действия в шапке окна, управляемая инструментом."""
+
+    def __init__(
+        self,
+        layout: QHBoxLayout,
+        label: str,
+        tooltip: str,
+        callback: Callable[[], None],
+    ) -> None:
+        self._layout = layout
+        self.button = QPushButton(label)
+        self.button.setObjectName("PrimaryBtn")
+        self.button.setFixedHeight(32)
+        self.button.setToolTip(tooltip)
+        self.button.clicked.connect(lambda _checked=False: callback())
+        self._layout.addWidget(self.button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.button.setEnabled(enabled)
+
+    def set_text(self, text: str) -> None:
+        self.button.setText(text)
+
+    def set_tooltip(self, text: str) -> None:
+        self.button.setToolTip(text)
+
+    def remove(self) -> None:
+        self._layout.removeWidget(self.button)
+        self.button.deleteLater()
+
+
 class MainWindow(QMainWindow):
     """Главное окно приложения Volume Kit."""
 
-    def __init__(self) -> None:
+    def __init__(self, registry: ToolRegistry, config: ConfigService | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Volume Kit")
         self.setMinimumSize(1120, 700)
 
-        self._worker: CalibrationWorker | None = None
+        self._config = config if config is not None else get_config_service()
+        self._tool_classes = registry.classes()
+        if not self._tool_classes:
+            raise RuntimeError("Не зарегистрировано ни одного инструмента")
+
+        self._tools: dict[str, BaseTool] = {}
+        self._commands = CommandBus()
+        self._global_actions: dict[str, GlobalAction] = {}
         self._nav_buttons: dict[str, QPushButton] = {}
         self._page_indices: dict[str, int] = {}
-        self._page_titles: dict[str, str] = {}
-        self._web_pages: dict[str, WebToolPage] = {}
-        self._current_page_key: str = "calibrator"
-        self._current_symbol: str = str(app_config.SYMBOL).strip().upper()
+        self._shown_tools: set[str] = set()
+        self._current_tool_id: str = ""
+        self._current_symbol: str = str(self._config.current.symbol).strip().upper()
         self._last_spot_price: float | None = None
 
         self._price_flash_timer = QTimer(self)
@@ -80,13 +113,15 @@ class MainWindow(QMainWindow):
         )
 
         self._build_ui()
+        self._create_tools()
         self._connect_signals()
 
         self._toast = ToastNotification(self)
         self._price_poller.start()
 
-        # Запускаем калибратор сразу после отрисовки окна
-        QTimer.singleShot(80, lambda: self.start_calibration(reload_cfg=False))
+        self._switch_tool(self._tool_classes[0].tool_id)
+
+    # ==================== ПОСТРОЕНИЕ ИНТЕРФЕЙСА ====================
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -113,7 +148,6 @@ class MainWindow(QMainWindow):
         body.setSpacing(0)
 
         self._stack = QStackedWidget()
-        self._register_pages()
         body.addWidget(self._stack, 1)
 
         self._logs_panel = LogsPanel()
@@ -122,8 +156,6 @@ class MainWindow(QMainWindow):
 
         right_lay.addLayout(body, 1)
         outer.addWidget(right_wrap, 1)
-
-        self._switch_page("calibrator")
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
@@ -166,27 +198,23 @@ class MainWindow(QMainWindow):
         div1.setObjectName("SidebarDivider")
         lay.addWidget(div1)
 
-        # Секция инструментов
-        sec_tools = QLabel("ИНСТРУМЕНТЫ")
-        sec_tools.setObjectName("NavSectionLabel")
-        lay.addWidget(sec_tools)
+        groups: dict[str, list[type[BaseTool]]] = {}
+        for tool_cls in self._tool_classes:
+            groups.setdefault(tool_cls.nav_group, []).append(tool_cls)
 
-        self._add_nav_button(lay, "calibrator", "⊞  Calibrator")
-        self._add_nav_button(lay, "liq_heatmap", "◔  Liquidation Heatmap")
-        self._add_nav_button(lay, "ob_heatmap", "▤  Liquidity Heatmap")
+        for group_index, (group_name, tool_classes) in enumerate(groups.items()):
+            if group_index > 0:
+                lay.addStretch(1)
+                divider = QFrame()
+                divider.setObjectName("SidebarDivider")
+                lay.addWidget(divider)
 
-        lay.addStretch(1)
+            section = QLabel(group_name)
+            section.setObjectName("NavSectionLabel")
+            lay.addWidget(section)
 
-        div2 = QFrame()
-        div2.setObjectName("SidebarDivider")
-        lay.addWidget(div2)
-
-        # Секция системы
-        sec_sys = QLabel("СИСТЕМА")
-        sec_sys.setObjectName("NavSectionLabel")
-        lay.addWidget(sec_sys)
-
-        self._add_nav_button(lay, "settings", "⚙  Настройки")
+            for tool_cls in tool_classes:
+                self._add_nav_button(lay, tool_cls.tool_id, tool_cls.nav_label)
 
         return sidebar
 
@@ -195,7 +223,7 @@ class MainWindow(QMainWindow):
         btn.setObjectName("NavButton")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setProperty("active", False)
-        btn.clicked.connect(lambda _checked=False, k=key: self._switch_page(k))
+        btn.clicked.connect(lambda _checked=False, k=key: self._switch_tool(k))
         repolish(btn)
         self._nav_buttons[key] = btn
         layout.addWidget(btn)
@@ -209,7 +237,7 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(22, 0, 22, 0)
         lay.setSpacing(10)
 
-        self._page_title_lbl = QLabel("Calibrator")
+        self._page_title_lbl = QLabel(self._tool_classes[0].title)
         self._page_title_lbl.setObjectName("PageTitle")
 
         self._symbol_pill = QLabel(self._current_symbol)
@@ -247,10 +275,10 @@ class MainWindow(QMainWindow):
         self._status_pill.setProperty("status", "running")
         repolish(self._status_pill)
 
-        self._recalc_btn = QPushButton("↻ Пересчитать")
-        self._recalc_btn.setObjectName("PrimaryBtn")
-        self._recalc_btn.setFixedHeight(32)
-        self._recalc_btn.setToolTip("Перечитать config.json и обновить расчёт Calibrator")
+        # Сюда инструменты добавляют свои глобальные кнопки
+        self._actions_layout = QHBoxLayout()
+        self._actions_layout.setContentsMargins(0, 0, 0, 0)
+        self._actions_layout.setSpacing(10)
 
         self._logs_btn = QPushButton("Логи (0)")
         self._logs_btn.setObjectName("SecondaryBtn")
@@ -263,79 +291,50 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._spot_price_pill, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addStretch(1)
         lay.addWidget(self._status_pill, 0, Qt.AlignmentFlag.AlignVCenter)
-        lay.addWidget(self._recalc_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addLayout(self._actions_layout)
         lay.addWidget(self._logs_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         return topbar
 
-    def _register_pages(self) -> None:
-        # 1. Calibrator
-        self._calibrator_page = CalibratorPage()
-        self._add_page("calibrator", "Calibrator", self._calibrator_page)
-
-        # 2. Coinglass Liquidation Heatmap
-        liq_page = WebToolPage(
-            title="Liquidation Heatmap (Binance BTCUSDT)",
-            url=COINGLASS_LIQ_URL,
-            target_class=COINGLASS_LIQ_CLASS,
-        )
-        self._web_pages["liq_heatmap"] = liq_page
-        self._add_page("liq_heatmap", "Liquidation Heatmap", liq_page)
-
-        # 3. Coinglass Liquidity Heatmap
-        ob_page = WebToolPage(
-            title="Liquidity Heatmap (BTC)",
-            url=COINGLASS_OB_URL,
-            target_class=COINGLASS_OB_CLASS,
-        )
-        self._web_pages["ob_heatmap"] = ob_page
-        self._add_page("ob_heatmap", "Liquidity Heatmap", ob_page)
-
-        # 4. Настройки config.json
-        self._settings_page = SettingsPage()
-        self._add_page("settings", "Настройки (config.json)", self._settings_page)
-
-    def _add_page(self, key: str, title: str, widget: QWidget) -> None:
-        idx = self._stack.addWidget(widget)
-        self._page_indices[key] = idx
-        self._page_titles[key] = title
+    def _create_tools(self) -> None:
+        """Создаёт экземпляры всех инструментов: команды и кнопки регистрируются сразу."""
+        context = ToolContext(config=self._config, host=self, commands=self._commands)
+        for tool_cls in self._tool_classes:
+            self._tools[tool_cls.tool_id] = tool_cls(context)
 
     def _connect_signals(self) -> None:
-        self._log_bridge.log_received.connect(self._on_log_received)
+        self._log_bridge.log_received.connect(self._logs_panel.add_entry)
         self._price_poller.price_updated.connect(self._on_spot_price_updated)
 
-        self._recalc_btn.clicked.connect(lambda: self.start_calibration(reload_cfg=True))
         self._logs_btn.clicked.connect(self._toggle_logs_panel)
 
         self._logs_panel.close_requested.connect(self._logs_panel.hide)
         self._logs_panel.copied.connect(self.show_toast)
         self._logs_panel.counts_changed.connect(self._on_log_counts_changed)
 
-        self._calibrator_page.copied.connect(self._on_value_copied)
-        self._calibrator_page.open_logs_requested.connect(self._open_logs_panel)
-        self._calibrator_page.recalc_requested.connect(
-            lambda: self.start_calibration(reload_cfg=True)
-        )
-
-        self._settings_page.saved.connect(self._on_settings_saved)
-        self._settings_page.toast_requested.connect(self.show_toast)
-
     # ==================== НАВИГАЦИЯ ====================
 
-    def _switch_page(self, key: str) -> None:
-        if key not in self._page_indices:
+    def _switch_tool(self, tool_id: str) -> None:
+        tool = self._tools.get(tool_id)
+        if tool is None:
             return
-        self._current_page_key = key
-        self._stack.setCurrentIndex(self._page_indices[key])
-        self._page_title_lbl.setText(self._page_titles[key])
+
+        # Виджет создаётся по требованию при первом открытии вкладки
+        if tool_id not in self._page_indices:
+            self._page_indices[tool_id] = self._stack.addWidget(tool.widget)
+
+        self._current_tool_id = tool_id
+        self._stack.setCurrentIndex(self._page_indices[tool_id])
+        self._page_title_lbl.setText(tool.title)
 
         for btn_key, btn in self._nav_buttons.items():
-            btn.setProperty("active", btn_key == key)
+            btn.setProperty("active", btn_key == tool_id)
             repolish(btn)
 
-        # Ленивая загрузка веб-инструментов при первом открытии
-        if key in self._web_pages:
-            self._web_pages[key].ensure_loaded()
+        if tool_id not in self._shown_tools:
+            self._shown_tools.add(tool_id)
+            tool.on_first_shown()
+        tool.on_shown()
 
     def _toggle_logs_panel(self) -> None:
         if self._logs_panel.isVisible():
@@ -343,23 +342,72 @@ class MainWindow(QMainWindow):
         else:
             self._logs_panel.show()
 
-    def _open_logs_panel(self) -> None:
+    # ==================== ToolHost: СЕРВИСЫ ДЛЯ ИНСТРУМЕНТОВ ====================
+
+    @property
+    def current_symbol(self) -> str:
+        return self._current_symbol
+
+    def show_toast(self, message: str) -> None:
+        self._toast.show_message(message)
+
+    def open_logs(self) -> None:
         self._logs_panel.show()
 
-    # ==================== LIVE ЦЕНА BINANCE SPOT ====================
+    def clear_logs(self) -> None:
+        self._logs_panel.clear_logs()
 
-    def _update_active_symbol(self, symbol: str) -> None:
+    def set_status(self, status_key: str, text: str) -> None:
+        self._status_pill.setProperty("status", status_key)
+        self._status_pill.setText(text)
+        repolish(self._status_pill)
+
+    def set_symbol(self, symbol: str) -> None:
         clean = str(symbol).strip().upper()
         if not clean:
             return
         changed = clean != self._current_symbol
         self._current_symbol = clean
         self._symbol_pill.setText(clean)
+        self._price_poller.set_symbol(clean)
         if changed:
             self._last_spot_price = None
             self._spot_price_val_lbl.setText("—")
             self._reset_spot_price_flash()
-            self._price_poller.set_symbol(clean)
+
+    def show_reference_price(self, value: Any) -> None:
+        """Показывает референсную цену, если live-цена ещё не приходила."""
+        if self._last_spot_price is None and value is not None:
+            self._spot_price_val_lbl.setText(_format_price(value))
+
+    def switch_tool(self, tool_id: str) -> None:
+        self._switch_tool(tool_id)
+
+    def subscribe_logs(self, callback: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+        self._log_bridge.log_received.connect(callback)
+
+        def _unsubscribe() -> None:
+            try:
+                self._log_bridge.log_received.disconnect(callback)
+            except (RuntimeError, TypeError):
+                pass
+
+        return _unsubscribe
+
+    def add_global_action(
+        self,
+        key: str,
+        label: str,
+        tooltip: str,
+        callback: Callable[[], None],
+    ) -> GlobalActionHandle:
+        if key in self._global_actions:
+            raise ValueError(f"Глобальное действие уже зарегистрировано: {key}")
+        action = GlobalAction(self._actions_layout, label, tooltip, callback)
+        self._global_actions[key] = action
+        return action
+
+    # ==================== LIVE ЦЕНА BINANCE SPOT ====================
 
     def _on_spot_price_updated(self, symbol: str, price: float) -> None:
         if symbol != self._current_symbol:
@@ -384,77 +432,7 @@ class MainWindow(QMainWindow):
         self._spot_price_val_lbl.setProperty("direction", "neutral")
         repolish(self._spot_price_val_lbl)
 
-    # ==================== КАЛИБРАЦИЯ ====================
-
-    def start_calibration(self, reload_cfg: bool = False) -> None:
-        if self._worker is not None and self._worker.isRunning():
-            self.show_toast("Расчёт уже выполняется")
-            return
-
-        if reload_cfg:
-            self._logs_panel.clear_logs()
-            self._calibrator_page.clear_mini_logs()
-
-        self._recalc_btn.setEnabled(False)
-        self._set_status("running", "Расчёт 0%")
-        self._calibrator_page.set_running(
-            symbol=self._current_symbol,
-            progress=2,
-            stage="Чтение config.json..." if reload_cfg else "Запуск калибратора...",
-        )
-
-        worker = CalibrationWorker(reload_cfg=reload_cfg, parent=self)
-        worker.progress_changed.connect(self._on_calc_progress)
-        worker.symbol_changed.connect(self._on_symbol_changed)
-        worker.finished_ok.connect(self._on_calc_finished)
-        worker.failed.connect(self._on_calc_failed)
-        worker.finished.connect(self._on_worker_cleanup)
-
-        self._worker = worker
-        worker.start()
-
-    def _on_calc_progress(self, pct: int, stage: str) -> None:
-        self._set_status("running", f"Расчёт {pct}%")
-        self._calibrator_page.update_progress(pct, stage)
-
-    def _on_symbol_changed(self, symbol: str) -> None:
-        self._update_active_symbol(symbol)
-        self._calibrator_page.set_symbol(self._current_symbol)
-
-    def _on_calc_finished(self, report: dict[str, Any]) -> None:
-        self._update_active_symbol(str(report.get("symbol", app_config.SYMBOL)))
-
-        # Если live-цена ещё не успела прийти, показываем референсную спот-цену из отчёта
-        if self._last_spot_price is None and report.get("spot_ref_price") is not None:
-            self._spot_price_val_lbl.setText(_format_price(report.get("spot_ref_price")))
-
-        elapsed = report.get("elapsed_sec", 0)
-        updated_at = report.get("updated_at", "")
-        self._set_status("done", f"Готово за {elapsed}с · {updated_at}")
-
-        self._calibrator_page.set_report(report)
-        self._recalc_btn.setEnabled(True)
-
-    def _on_calc_failed(self, err_msg: str) -> None:
-        self._set_status("error", "Ошибка расчёта")
-        self._calibrator_page.set_error(err_msg)
-        self._recalc_btn.setEnabled(True)
-
-    def _on_worker_cleanup(self) -> None:
-        if self._worker is not None:
-            self._worker.deleteLater()
-            self._worker = None
-
-    def _set_status(self, status_key: str, text: str) -> None:
-        self._status_pill.setProperty("status", status_key)
-        self._status_pill.setText(text)
-        repolish(self._status_pill)
-
     # ==================== ОБРАБОТЧИКИ СОБЫТИЙ ====================
-
-    def _on_log_received(self, entry: dict[str, Any]) -> None:
-        self._logs_panel.add_entry(entry)
-        self._calibrator_page.append_log_entry(entry)
 
     def _on_log_counts_changed(self, total: int, warns: int, errs: int) -> None:
         if errs > 0:
@@ -463,21 +441,6 @@ class MainWindow(QMainWindow):
             self._logs_btn.setText(f"Логи ({warns} WARN)")
         else:
             self._logs_btn.setText(f"Логи ({total})")
-
-    def _on_value_copied(self, label: str, value: str) -> None:
-        self.show_toast(f"✓ Скопировано ({label}): {value}")
-
-    def _on_settings_saved(self, cfg: dict[str, Any], recalculate: bool) -> None:
-        self._update_active_symbol(str(cfg.get("SYMBOL", app_config.SYMBOL)))
-        if recalculate:
-            self.show_toast("✓ Настройки сохранены — запускаю пересчёт...")
-            self._switch_page("calibrator")
-            self.start_calibration(reload_cfg=True)
-        else:
-            self.show_toast("✓ Настройки сохранены в config.json")
-
-    def show_toast(self, message: str) -> None:
-        self._toast.show_message(message)
 
     # ==================== СИСТЕМНЫЕ СОБЫТИЯ ОКНА ====================
 
@@ -505,8 +468,10 @@ class MainWindow(QMainWindow):
         logging.getLogger().removeHandler(self._log_handler)
         if self._price_poller.isRunning():
             self._price_poller.stop()
-            self._price_poller.wait(800)
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.requestInterruption()
-            self._worker.wait(800)
+            # Ждём штатного завершения; сетевой вызов может зависнуть, поэтому есть жёсткий откат
+            if not self._price_poller.wait(2000):
+                self._price_poller.terminate()
+                self._price_poller.wait(500)
+        for tool in self._tools.values():
+            tool.shutdown()
         super().closeEvent(event)

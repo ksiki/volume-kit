@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .widgets import ExchangeDot, MetricBox, TfBadge, ThresholdButton
+from app.ui.widgets import ExchangeDot, MetricBox, TfBadge, ThresholdButton
 
 
 class ScaleTile(QFrame):

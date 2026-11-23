@@ -3,7 +3,7 @@ old_versions
 .venv
 app/data_cache
 app/web_profile
-app/config.jsom
+app/config.json
 __pycache__
 
 # Byte-compiled / optimized / DLL files

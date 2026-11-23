@@ -1,20 +1,12 @@
+"""Настройки приложения: дефолты, валидация и сервис доступа к config.json."""
+
 import copy
 import json
-import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# ===================== ПУТИ (СОВМЕСТИМО С .EXE) =====================
-# В собранном .exe (PyInstaller / Nuitka) файлы и папки лежат рядом с самим .exe,
-# а в обычном режиме — в папке app/ (чтобы не потерять текущий data_cache)
-if getattr(sys, "frozen", False):
-    BASE_DIR = Path(sys.executable).resolve().parent
-else:
-    BASE_DIR = Path(__file__).resolve().parent
-
-CONFIG_PATH = BASE_DIR / "config.json"
-CACHE_DIR = BASE_DIR / "data_cache"
-OUTPUT_DIR = BASE_DIR / "output"
+from app.core.paths import CONFIG_PATH
 
 # ===================== ДЕФОЛТНЫЕ НАСТРОЙКИ =====================
 # В JSON ключи словарей всегда строковые, а вместо бесконечности (inf) используется null
@@ -62,31 +54,31 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
-def _save_config(data: dict[str, Any]) -> None:
-    CONFIG_PATH.write_text(
+def _write_config(path: Path, data: dict[str, Any]) -> None:
+    path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
 
-def _load_or_create_config() -> dict[str, Any]:
+def _load_or_create_config(config_path: Path) -> dict[str, Any]:
     """Читает config.json рядом с приложением; при отсутствии создаёт файл с дефолтами."""
-    if not CONFIG_PATH.exists():
+    if not config_path.exists():
         defaults = copy.deepcopy(DEFAULT_CONFIG)
-        _save_config(defaults)
-        print(f"[Config] Создан файл настроек по умолчанию: {CONFIG_PATH}")
+        _write_config(config_path, defaults)
+        print(f"[Config] Создан файл настроек по умолчанию: {config_path}")
         return defaults
 
     try:
-        raw_text = CONFIG_PATH.read_text(encoding="utf-8")
+        raw_text = config_path.read_text(encoding="utf-8")
         user_data = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
-            f"Ошибка синтаксиса в {CONFIG_PATH} (строка {exc.lineno}, столбец {exc.colno}): {exc.msg}"
+            f"Ошибка синтаксиса в {config_path} (строка {exc.lineno}, столбец {exc.colno}): {exc.msg}"
         ) from exc
 
     if not isinstance(user_data, dict):
-        raise RuntimeError(f"Файл {CONFIG_PATH} должен содержать JSON-объект {{...}}")
+        raise RuntimeError(f"Файл {config_path} должен содержать JSON-объект {{...}}")
 
     # Подмешиваем недостающие ключи из дефолтов (защита при обновлениях или случайном удалении поля)
     merged = copy.deepcopy(DEFAULT_CONFIG)
@@ -94,8 +86,8 @@ def _load_or_create_config() -> dict[str, Any]:
 
     missing_keys = [k for k in DEFAULT_CONFIG if k not in user_data]
     if missing_keys:
-        _save_config(merged)
-        print(f"[Config] В {CONFIG_PATH.name} добавлены недостающие параметры: {', '.join(missing_keys)}")
+        _write_config(config_path, merged)
+        print(f"[Config] В {config_path.name} добавлены недостающие параметры: {', '.join(missing_keys)}")
 
     return merged
 
@@ -179,80 +171,106 @@ def normalize_config(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def load_raw_config() -> dict[str, Any]:
-    """Возвращает актуальный словарь настроек из config.json (для редактора в UI)."""
-    return _load_or_create_config()
+@dataclass(frozen=True)
+class AppSettings:
+    """Иммутабельный снимок настроек, используемый расчётными модулями."""
+
+    config_path: Path
+    symbol: str
+    spot_clusters: int
+    futures_clusters: int
+    days_binance_1h: int
+    days_binance_15m: int
+    days_bybit_15m: int
+    days_bybit_5m: int
+    cluster_mode: str
+    atr_lookback_days: dict[int, int]
+    atr_winsor_pct: float
+    scale_rounding_rules: tuple[tuple[float, int], ...]
+    half_life_days: dict[int, float]
+    outlier_day_max_ratio: float
+    outlier_day_min_weight: float
+    download_workers: int
+    tz_offset_hours: int
+    console_top_rows: int
+    save_sorted_csv: bool
+    raw: dict[str, Any]
+
+    @classmethod
+    def from_raw(cls, cfg: dict[str, Any], config_path: Path) -> "AppSettings":
+        """Собирает снимок настроек из «сырого» словаря config.json."""
+        merged = copy.deepcopy(DEFAULT_CONFIG)
+        merged.update(cfg)
+        return cls(
+            config_path=config_path,
+            symbol=str(merged["SYMBOL"]).strip().upper(),
+            spot_clusters=int(merged["SPOT_CLUSTERS"]),
+            futures_clusters=int(merged["FUTURES_CLUSTERS"]),
+            days_binance_1h=int(merged["DAYS_BINANCE_1H"]),
+            days_binance_15m=int(merged["DAYS_BINANCE_15M"]),
+            days_bybit_15m=int(merged["DAYS_BYBIT_15M"]),
+            days_bybit_5m=int(merged["DAYS_BYBIT_5M"]),
+            cluster_mode=str(merged["CLUSTER_MODE"]).strip().lower(),
+            atr_lookback_days=_parse_int_map(merged["ATR_LOOKBACK_DAYS"]),
+            atr_winsor_pct=float(merged["ATR_WINSOR_PCT"]),
+            scale_rounding_rules=tuple(_parse_scale_rules(merged["SCALE_ROUNDING_RULES"])),
+            half_life_days=_parse_float_map(merged["HALF_LIFE_DAYS"]),
+            outlier_day_max_ratio=float(merged["OUTLIER_DAY_MAX_RATIO"]),
+            outlier_day_min_weight=float(merged["OUTLIER_DAY_MIN_WEIGHT"]),
+            download_workers=int(merged["DOWNLOAD_WORKERS"]),
+            tz_offset_hours=int(merged["TZ_OFFSET_HOURS"]),
+            console_top_rows=int(merged["CONSOLE_TOP_ROWS"]),
+            save_sorted_csv=bool(merged["SAVE_SORTED_CSV"]),
+            raw=merged,
+        )
 
 
-def save_raw_config(data: dict[str, Any]) -> dict[str, Any]:
-    """Валидирует, сохраняет config.json и обновляет глобальные переменные модуля."""
-    clean = normalize_config(data)
-    _save_config(clean)
-    _apply_globals(clean)
-    return clean
+class ConfigService:
+    """Единая точка чтения и записи config.json."""
+
+    def __init__(self, config_path: Path | None = None) -> None:
+        self._config_path = Path(config_path) if config_path is not None else CONFIG_PATH
+        self._current: AppSettings = self.reload()
+
+    @property
+    def config_path(self) -> Path:
+        return self._config_path
+
+    @property
+    def current(self) -> AppSettings:
+        return self._current
+
+    def reload(self) -> AppSettings:
+        """Перечитывает config.json и обновляет текущий снимок настроек."""
+        raw = self.load_raw()
+        self._current = AppSettings.from_raw(raw, self._config_path)
+        return self._current
+
+    def load_raw(self) -> dict[str, Any]:
+        """Возвращает актуальный словарь настроек из config.json (для редактора в UI)."""
+        return _load_or_create_config(self._config_path)
+
+    def save_raw(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Валидирует, сохраняет config.json и обновляет текущий снимок настроек."""
+        clean = normalize_config(data)
+        _write_config(self._config_path, clean)
+        self._current = AppSettings.from_raw(clean, self._config_path)
+        return clean
+
+    def reset_defaults(self) -> dict[str, Any]:
+        """Сбрасывает config.json к значениям по умолчанию."""
+        defaults = copy.deepcopy(DEFAULT_CONFIG)
+        _write_config(self._config_path, defaults)
+        self._current = AppSettings.from_raw(defaults, self._config_path)
+        return defaults
 
 
-def reset_to_defaults() -> dict[str, Any]:
-    """Сбрасывает config.json к значениям по умолчанию."""
-    defaults = copy.deepcopy(DEFAULT_CONFIG)
-    _save_config(defaults)
-    _apply_globals(defaults)
-    return defaults
+_default_service: ConfigService | None = None
 
 
-def _apply_globals(cfg: dict[str, Any]) -> None:
-    global _CFG
-    global SYMBOL, SPOT_CLUSTERS, FUTURES_CLUSTERS
-    global DAYS_BINANCE_1H, DAYS_BINANCE_15M, DAYS_BYBIT_15M, DAYS_BYBIT_5M
-    global CLUSTER_MODE, ATR_LOOKBACK_DAYS, ATR_WINSOR_PCT, SCALE_ROUNDING_RULES
-    global HALF_LIFE_DAYS, OUTLIER_DAY_MAX_RATIO, OUTLIER_DAY_MIN_WEIGHT
-    global DOWNLOAD_WORKERS, TZ_OFFSET_HOURS, CONSOLE_TOP_ROWS, SAVE_SORTED_CSV
-
-    _CFG = cfg
-    SYMBOL = str(cfg["SYMBOL"]).strip().upper()
-    SPOT_CLUSTERS = int(cfg["SPOT_CLUSTERS"])
-    FUTURES_CLUSTERS = int(cfg["FUTURES_CLUSTERS"])
-
-    DAYS_BINANCE_1H = int(cfg["DAYS_BINANCE_1H"])
-    DAYS_BINANCE_15M = int(cfg["DAYS_BINANCE_15M"])
-    DAYS_BYBIT_15M = int(cfg["DAYS_BYBIT_15M"])
-    DAYS_BYBIT_5M = int(cfg["DAYS_BYBIT_5M"])
-
-    CLUSTER_MODE = str(cfg["CLUSTER_MODE"]).strip().lower()
-
-    ATR_LOOKBACK_DAYS = _parse_int_map(cfg["ATR_LOOKBACK_DAYS"])
-    ATR_WINSOR_PCT = float(cfg["ATR_WINSOR_PCT"])
-    SCALE_ROUNDING_RULES = _parse_scale_rules(cfg["SCALE_ROUNDING_RULES"])
-
-    HALF_LIFE_DAYS = _parse_float_map(cfg["HALF_LIFE_DAYS"])
-    OUTLIER_DAY_MAX_RATIO = float(cfg["OUTLIER_DAY_MAX_RATIO"])
-    OUTLIER_DAY_MIN_WEIGHT = float(cfg["OUTLIER_DAY_MIN_WEIGHT"])
-
-    DOWNLOAD_WORKERS = int(cfg["DOWNLOAD_WORKERS"])
-    TZ_OFFSET_HOURS = int(cfg["TZ_OFFSET_HOURS"])
-    CONSOLE_TOP_ROWS = int(cfg["CONSOLE_TOP_ROWS"])
-    SAVE_SORTED_CSV = bool(cfg["SAVE_SORTED_CSV"])
-
-
-# ===================== ЗАГРУЗКА ПАРАМЕТРОВ =====================
-_CFG: dict[str, Any] = {}
-SYMBOL: str = "BTCUSDT"
-SPOT_CLUSTERS: int = 15
-FUTURES_CLUSTERS: int = 30
-DAYS_BINANCE_1H: int = 60
-DAYS_BINANCE_15M: int = 30
-DAYS_BYBIT_15M: int = 30
-DAYS_BYBIT_5M: int = 14
-CLUSTER_MODE: str = "round"
-ATR_LOOKBACK_DAYS: dict[int, int] = {}
-ATR_WINSOR_PCT: float = 95.0
-SCALE_ROUNDING_RULES: list[tuple[float, int]] = []
-HALF_LIFE_DAYS: dict[int, float] = {}
-OUTLIER_DAY_MAX_RATIO: float = 2.5
-OUTLIER_DAY_MIN_WEIGHT: float = 0.15
-DOWNLOAD_WORKERS: int = 4
-TZ_OFFSET_HOURS: int = 0
-CONSOLE_TOP_ROWS: int = 0
-SAVE_SORTED_CSV: bool = False
-
-_apply_globals(_load_or_create_config())
+def get_config_service() -> ConfigService:
+    """Возвращает процесс-синглтон сервиса настроек."""
+    global _default_service
+    if _default_service is None:
+        _default_service = ConfigService()
+    return _default_service

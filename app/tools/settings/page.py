@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import config as app_config
+from app.core.config import ConfigService
 
 
 def _make_section_card(title: str, subtitle: str = "") -> tuple[QFrame, QVBoxLayout]:
@@ -64,8 +64,9 @@ class SettingsPage(QWidget):
     saved = Signal(dict, bool)  # (config_dict, should_recalculate)
     toast_requested = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, config: ConfigService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._config = config
         self._build_ui()
         self.load_from_disk()
 
@@ -81,7 +82,7 @@ class SettingsPage(QWidget):
         ab_lay.setContentsMargins(24, 10, 24, 10)
         ab_lay.setSpacing(10)
 
-        path_lbl = QLabel(f"Файл: {app_config.CONFIG_PATH}")
+        path_lbl = QLabel(f"Файл: {self._config.config_path}")
         path_lbl.setObjectName("ScaleMeta")
         path_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
@@ -341,7 +342,7 @@ class SettingsPage(QWidget):
 
     def load_from_disk(self) -> None:
         try:
-            cfg = app_config.load_raw_config()
+            cfg = self._config.load_raw()
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка чтения config.json", str(exc))
             return
@@ -485,7 +486,7 @@ class SettingsPage(QWidget):
     def _save(self, recalculate: bool) -> None:
         try:
             raw = self._collect_config()
-            clean = app_config.save_raw_config(raw)
+            clean = self._config.save_raw(raw)
         except Exception as exc:
             QMessageBox.warning(self, "Ошибка в настройках", str(exc))
             return
@@ -504,13 +505,13 @@ class SettingsPage(QWidget):
         if ans != QMessageBox.StandardButton.Yes:
             return
 
-        clean = app_config.reset_to_defaults()
+        clean = self._config.reset_defaults()
         self._populate_fields(clean)
         self.saved.emit(clean, False)
         self.toast_requested.emit("✓ Настройки сброшены к значениям по умолчанию")
 
     def _open_config_file(self) -> None:
-        path = app_config.CONFIG_PATH
+        path = self._config.config_path
         try:
             if sys.platform.startswith("win"):
                 os.startfile(str(path))

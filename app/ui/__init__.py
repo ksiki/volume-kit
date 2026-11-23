@@ -1,3 +1,1 @@
-from .main_window import MainWindow
-
-__all__ = ["MainWindow"]
+"""UI-слой Volume Kit: оболочка окна, виджеты, тема и фоновые Qt-потоки."""
