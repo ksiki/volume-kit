@@ -1,0 +1,69 @@
+{
+  "SYMBOL": "BTCUSDT",
+  "SPOT_CLUSTERS": 15,
+  "FUTURES_CLUSTERS": 30,
+  "DAYS_BINANCE_1H": 60,
+  "DAYS_BINANCE_15M": 30,
+  "DAYS_BYBIT_15M": 30,
+  "DAYS_BYBIT_5M": 14,
+  "CLUSTER_MODE": "round",
+  "ATR_LOOKBACK_DAYS": {
+    "5": 7,
+    "15": 14,
+    "60": 21,
+    "240": 45,
+    "1440": 90
+  },
+  "ATR_WINSOR_PCT": 95.0,
+  "SCALE_ROUNDING_RULES": [
+    [
+      20,
+      1
+    ],
+    [
+      50,
+      2
+    ],
+    [
+      100,
+      5
+    ],
+    [
+      250,
+      10
+    ],
+    [
+      500,
+      25
+    ],
+    [
+      1000,
+      50
+    ],
+    [
+      2500,
+      100
+    ],
+    [
+      5000,
+      250
+    ],
+    [
+      null,
+      500
+    ]
+  ],
+  "HALF_LIFE_DAYS": {
+    "5": 4.0,
+    "15": 7.0,
+    "60": 14.0,
+    "240": 30.0,
+    "1440": 60.0
+  },
+  "OUTLIER_DAY_MAX_RATIO": 2.5,
+  "OUTLIER_DAY_MIN_WEIGHT": 0.15,
+  "DOWNLOAD_WORKERS": 4,
+  "TZ_OFFSET_HOURS": 0,
+  "CONSOLE_TOP_ROWS": 0,
+  "SAVE_SORTED_CSV": false
+}

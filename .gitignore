@@ -1,0 +1,6 @@
+old_versions
+.env
+.venv
+app/data_cache
+app/config.jsom
+__pycache__
