@@ -10,6 +10,7 @@ def register_builtin_tools() -> ToolRegistry:
     и в обычном режиме, и в сборке PyInstaller / frozen.
     """
     from app.tools.calibrator import CalibratorTool  # noqa: F401
+    from app.tools.oi_regime import OIRegimeTool  # noqa: F401
     from app.tools.settings import SettingsTool  # noqa: F401
     from app.tools.web import LiquidationHeatmapTool, LiquidityHeatmapTool  # noqa: F401
 

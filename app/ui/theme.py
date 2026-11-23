@@ -1,3 +1,5 @@
+from app.core.paths import assets_dir
+
 FONT_FAMILY_UI = "Segoe UI"
 FONT_FAMILY_MONO = "Cascadia Code"
 
@@ -21,6 +23,19 @@ PALETTE = {
     "warn": "#D97706",
     "err": "#DC2626",
 }
+
+
+def _qss_asset(name: str) -> str:
+    """Путь к SVG-ассету в формате QSS url() (прямые слэши для Windows)."""
+    return (assets_dir() / "icons" / name).as_posix()
+
+
+_SPIN_UP_ICON = _qss_asset("spin_up.svg")
+_SPIN_DOWN_ICON = _qss_asset("spin_down.svg")
+_SPIN_UP_ICON_DISABLED = _qss_asset("spin_up_disabled.svg")
+_SPIN_DOWN_ICON_DISABLED = _qss_asset("spin_down_disabled.svg")
+_CHECK_ICON = _qss_asset("check.svg")
+_CHECK_ICON_DISABLED = _qss_asset("check_disabled.svg")
 
 APP_STYLESHEET = f"""
 /* ==================== БАЗОВЫЕ СТИЛИ ==================== */
@@ -561,6 +576,63 @@ QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border: 1.5px solid {PALETTE["accent"]};
     background-color: #FFFFFF;
 }}
+
+/* Компактные спинбоксы с аккуратными SVG-стрелками (без нативных артефактов) */
+QSpinBox, QDoubleSpinBox {{
+    padding-right: 20px;
+}}
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 16px;
+    height: 12px;
+    margin: 2px 2px 0 0;
+    border: none;
+    border-left: 1px solid {PALETTE["border"]};
+    border-top-right-radius: 5px;
+    background-color: transparent;
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 16px;
+    height: 12px;
+    margin: 0 2px 2px 0;
+    border: none;
+    border-left: 1px solid {PALETTE["border"]};
+    border-bottom-right-radius: 5px;
+    background-color: transparent;
+}}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+    background-color: {PALETTE["surface_hover"]};
+}}
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {{
+    background-color: {PALETTE["border"]};
+}}
+QSpinBox::up-button:disabled, QDoubleSpinBox::up-button:disabled,
+QSpinBox::down-button:disabled, QDoubleSpinBox::down-button:disabled {{
+    background-color: transparent;
+}}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    width: 9px;
+    height: 6px;
+    image: url("{_SPIN_UP_ICON}");
+}}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    width: 9px;
+    height: 6px;
+    image: url("{_SPIN_DOWN_ICON}");
+}}
+QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled,
+QSpinBox::up-arrow:off, QDoubleSpinBox::up-arrow:off {{
+    image: url("{_SPIN_UP_ICON_DISABLED}");
+}}
+QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled,
+QSpinBox::down-arrow:off, QDoubleSpinBox::down-arrow:off {{
+    image: url("{_SPIN_DOWN_ICON_DISABLED}");
+}}
 QComboBox {{
     combobox-popup: 0;
     padding-right: 26px;
@@ -631,9 +703,27 @@ QCheckBox::indicator {{
     border: 1px solid {PALETTE["border_strong"]};
     background-color: #FFFFFF;
 }}
+QCheckBox::indicator:hover {{
+    border-color: {PALETTE["accent"]};
+}}
 QCheckBox::indicator:checked {{
     background-color: {PALETTE["accent"]};
     border-color: {PALETTE["accent"]};
+    image: url("{_CHECK_ICON}");
+}}
+QCheckBox::indicator:checked:hover {{
+    background-color: {PALETTE["accent_hover"]};
+    border-color: {PALETTE["accent_hover"]};
+    image: url("{_CHECK_ICON}");
+}}
+QCheckBox::indicator:disabled {{
+    background-color: {PALETTE["surface_alt"]};
+    border-color: {PALETTE["border"]};
+}}
+QCheckBox::indicator:checked:disabled {{
+    background-color: {PALETTE["border_strong"]};
+    border-color: {PALETTE["border_strong"]};
+    image: url("{_CHECK_ICON_DISABLED}");
 }}
 
 QTableWidget {{
@@ -671,6 +761,140 @@ QLabel#SettingsHint {{
 QFrame#WebToolbar {{
     background-color: {PALETTE["surface"]};
     border-bottom: 1px solid {PALETTE["border"]};
+}}
+
+/* ==================== OI & DELTA REGIME ==================== */
+QFrame#OiToolbar {{
+    background-color: {PALETTE["surface"]};
+    border-bottom: 1px solid {PALETTE["border"]};
+}}
+QLabel#OiToolbarLabel {{
+    color: {PALETTE["text_muted"]};
+    font-size: 11px;
+    font-weight: 700;
+}}
+QLabel#OiStatusBadge {{
+    background-color: {PALETTE["surface_alt"]};
+    border: 1px solid {PALETTE["border"]};
+    border-radius: 7px;
+    padding: 4px 9px;
+    font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: {PALETTE["text_secondary"]};
+}}
+QLabel#OiStatusBadge[state="loading"] {{
+    background-color: {PALETTE["accent_soft"]};
+    border-color: {PALETTE["accent_border"]};
+    color: {PALETTE["accent_hover"]};
+}}
+QLabel#OiStatusBadge[state="ok"] {{
+    background-color: #ECFDF5;
+    border-color: #A7F3D0;
+    color: #047857;
+}}
+QLabel#OiStatusBadge[state="warn"] {{
+    background-color: #FFFBEB;
+    border-color: #FDE68A;
+    color: #B45309;
+}}
+QLabel#OiStatusBadge[state="error"] {{
+    background-color: #FEF2F2;
+    border-color: #FECACA;
+    color: #B91C1C;
+}}
+QFrame#OiChartPanel, QFrame#OiFeedPanel {{
+    background-color: {PALETTE["surface"]};
+    border: 1px solid {PALETTE["border"]};
+    border-radius: 10px;
+}}
+QFrame#OiFeedHeader {{
+    background-color: {PALETTE["surface_alt"]};
+    border-bottom: 1px solid {PALETTE["border"]};
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+}}
+QLabel#OiPaneTitle {{
+    font-size: 13px;
+    font-weight: 700;
+    color: {PALETTE["text"]};
+}}
+QLabel#OiFeedCount {{
+    background-color: {PALETTE["accent_soft"]};
+    border: 1px solid {PALETTE["accent_border"]};
+    border-radius: 8px;
+    padding: 1px 8px;
+    font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
+    font-size: 11px;
+    font-weight: 700;
+    color: {PALETTE["accent_hover"]};
+}}
+QFrame#OiFeedCard {{
+    background-color: {PALETTE["surface"]};
+    border: 1px solid {PALETTE["border"]};
+    border-radius: 9px;
+}}
+QFrame#OiFeedCard:hover {{
+    background-color: {PALETTE["surface_hover"]};
+    border-color: {PALETTE["border_strong"]};
+}}
+QLabel#OiFeedTime {{
+    font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
+    font-size: 11px;
+    font-weight: 700;
+    color: {PALETTE["text_secondary"]};
+}}
+QLabel#OiFeedStrength {{
+    font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
+    font-size: 10px;
+    color: {PALETTE["text_muted"]};
+}}
+QLabel#OiRegimeBadge {{
+    border-radius: 5px;
+    padding: 2px 7px;
+    font-size: 11px;
+    font-weight: 700;
+}}
+QLabel#OiPill {{
+    background-color: {PALETTE["surface_alt"]};
+    border: 1px solid {PALETTE["border"]};
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: {PALETTE["text_secondary"]};
+}}
+QLabel#OiPill[variant="warn"] {{
+    background-color: #FFFBEB;
+    border-color: #FDE68A;
+    color: #B45309;
+}}
+QLabel#OiPill[variant="ok"] {{
+    background-color: #ECFDF5;
+    border-color: #A7F3D0;
+    color: #047857;
+}}
+QLabel#OiPill[variant="div"] {{
+    background-color: #F0F9FF;
+    border-color: #BAE6FD;
+    color: #0369A1;
+}}
+QLabel#OiPill[variant="live"] {{
+    background-color: #FEF2F2;
+    border-color: #FECACA;
+    color: #B91C1C;
+    font-weight: 800;
+}}
+QFrame#OiChartTooltip {{
+    background-color: #0F172A;
+    border: 1px solid #334155;
+    border-radius: 8px;
+}}
+QScrollArea#OiFeedScroll {{
+    background-color: {PALETTE["surface_alt"]};
+}}
+QSplitter::handle {{
+    background-color: {PALETTE["border"]};
 }}
 
 /* ==================== TOAST УВЕДОМЛЕНИЕ ==================== */

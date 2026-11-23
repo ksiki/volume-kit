@@ -51,7 +51,31 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "TZ_OFFSET_HOURS": 0,
     "CONSOLE_TOP_ROWS": 0,
     "SAVE_SORTED_CSV": False,
+    # OI & Delta Regime
+    "OI_DEFAULT_TIMEFRAME": "1h",
+    "OI_Z_WINDOW": 60,
+    "OI_THRESHOLD_OI": 2.0,
+    "OI_THRESHOLD_DELTA": 1.5,
+    "OI_ABSORPTION_CLOSE_RATIO": 0.35,
+    "OI_ABSORPTION_MIN_Z_DELTA": 1.5,
+    "OI_SPOT_SYNC_MIN_Z": 1.0,
+    "OI_SPOT_DIV_MIN_Z": 0.8,
+    "OI_SPOT_DEAD_MAX_Z": 0.3,
+    "OI_SPOT_DEAD_EXTREME_OI_Z": 2.5,
+    "OI_USE_BYBIT": True,
+    "OI_VISIBLE_BARS": 200,
+    "OI_REFRESH_SEC": 20,
+    # OI & Delta Regime: состояние тулбара (единый источник правды для страницы настроек)
+    "OI_ONLY_ABSORPTION": False,
+    "OI_HIDE_WEAK_NO_SPOT": False,
+    "OI_SHOW_Z_SUBPLOT": True,
+    "OI_LIVE_ENABLED": True,
 }
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    """Ограничивает значение диапазоном [low, high]."""
+    return max(low, min(high, value))
 
 
 def _write_config(path: Path, data: dict[str, Any]) -> None:
@@ -149,6 +173,10 @@ def normalize_config(data: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("Шаг округления в SCALE_ROUNDING_RULES должен быть > 0")
         clean_rules.append([limit_clean, step_clean])
 
+    oi_timeframe = str(merged["OI_DEFAULT_TIMEFRAME"]).strip().lower()
+    if oi_timeframe not in ("5m", "15m", "1h", "4h"):
+        raise ValueError("OI_DEFAULT_TIMEFRAME должен быть одним из: 5m, 15m, 1h, 4h")
+
     return {
         "SYMBOL": symbol,
         "SPOT_CLUSTERS": max(1, int(merged["SPOT_CLUSTERS"])),
@@ -168,6 +196,29 @@ def normalize_config(data: dict[str, Any]) -> dict[str, Any]:
         "TZ_OFFSET_HOURS": int(merged["TZ_OFFSET_HOURS"]),
         "CONSOLE_TOP_ROWS": max(0, int(merged["CONSOLE_TOP_ROWS"])),
         "SAVE_SORTED_CSV": bool(merged["SAVE_SORTED_CSV"]),
+        "OI_DEFAULT_TIMEFRAME": oi_timeframe,
+        "OI_Z_WINDOW": int(_clamp(int(merged["OI_Z_WINDOW"]), 15, 200)),
+        "OI_THRESHOLD_OI": float(_clamp(float(merged["OI_THRESHOLD_OI"]), 0.5, 6.0)),
+        "OI_THRESHOLD_DELTA": float(_clamp(float(merged["OI_THRESHOLD_DELTA"]), 0.5, 6.0)),
+        "OI_ABSORPTION_CLOSE_RATIO": float(
+            _clamp(float(merged["OI_ABSORPTION_CLOSE_RATIO"]), 0.10, 0.49)
+        ),
+        "OI_ABSORPTION_MIN_Z_DELTA": float(
+            _clamp(float(merged["OI_ABSORPTION_MIN_Z_DELTA"]), 0.5, 5.0)
+        ),
+        "OI_SPOT_SYNC_MIN_Z": float(_clamp(float(merged["OI_SPOT_SYNC_MIN_Z"]), 0.3, 4.0)),
+        "OI_SPOT_DIV_MIN_Z": float(_clamp(float(merged["OI_SPOT_DIV_MIN_Z"]), 0.2, 4.0)),
+        "OI_SPOT_DEAD_MAX_Z": float(_clamp(float(merged["OI_SPOT_DEAD_MAX_Z"]), 0.05, 1.5)),
+        "OI_SPOT_DEAD_EXTREME_OI_Z": float(
+            _clamp(float(merged["OI_SPOT_DEAD_EXTREME_OI_Z"]), 1.0, 6.0)
+        ),
+        "OI_USE_BYBIT": bool(merged["OI_USE_BYBIT"]),
+        "OI_VISIBLE_BARS": int(_clamp(int(merged["OI_VISIBLE_BARS"]), 60, 400)),
+        "OI_REFRESH_SEC": int(_clamp(int(merged["OI_REFRESH_SEC"]), 0, 120)),
+        "OI_ONLY_ABSORPTION": bool(merged["OI_ONLY_ABSORPTION"]),
+        "OI_HIDE_WEAK_NO_SPOT": bool(merged["OI_HIDE_WEAK_NO_SPOT"]),
+        "OI_SHOW_Z_SUBPLOT": bool(merged["OI_SHOW_Z_SUBPLOT"]),
+        "OI_LIVE_ENABLED": bool(merged["OI_LIVE_ENABLED"]),
     }
 
 
@@ -194,6 +245,23 @@ class AppSettings:
     tz_offset_hours: int
     console_top_rows: int
     save_sorted_csv: bool
+    oi_default_timeframe: str
+    oi_z_window: int
+    oi_threshold_oi: float
+    oi_threshold_delta: float
+    oi_absorption_close_ratio: float
+    oi_absorption_min_z_delta: float
+    oi_spot_sync_min_z: float
+    oi_spot_div_min_z: float
+    oi_spot_dead_max_z: float
+    oi_spot_dead_extreme_oi_z: float
+    oi_use_bybit: bool
+    oi_visible_bars: int
+    oi_refresh_sec: int
+    oi_only_absorption: bool
+    oi_hide_weak_no_spot: bool
+    oi_show_z_subplot: bool
+    oi_live_enabled: bool
     raw: dict[str, Any]
 
     @classmethod
@@ -221,6 +289,23 @@ class AppSettings:
             tz_offset_hours=int(merged["TZ_OFFSET_HOURS"]),
             console_top_rows=int(merged["CONSOLE_TOP_ROWS"]),
             save_sorted_csv=bool(merged["SAVE_SORTED_CSV"]),
+            oi_default_timeframe=str(merged["OI_DEFAULT_TIMEFRAME"]).strip().lower(),
+            oi_z_window=int(merged["OI_Z_WINDOW"]),
+            oi_threshold_oi=float(merged["OI_THRESHOLD_OI"]),
+            oi_threshold_delta=float(merged["OI_THRESHOLD_DELTA"]),
+            oi_absorption_close_ratio=float(merged["OI_ABSORPTION_CLOSE_RATIO"]),
+            oi_absorption_min_z_delta=float(merged["OI_ABSORPTION_MIN_Z_DELTA"]),
+            oi_spot_sync_min_z=float(merged["OI_SPOT_SYNC_MIN_Z"]),
+            oi_spot_div_min_z=float(merged["OI_SPOT_DIV_MIN_Z"]),
+            oi_spot_dead_max_z=float(merged["OI_SPOT_DEAD_MAX_Z"]),
+            oi_spot_dead_extreme_oi_z=float(merged["OI_SPOT_DEAD_EXTREME_OI_Z"]),
+            oi_use_bybit=bool(merged["OI_USE_BYBIT"]),
+            oi_visible_bars=int(merged["OI_VISIBLE_BARS"]),
+            oi_refresh_sec=int(merged["OI_REFRESH_SEC"]),
+            oi_only_absorption=bool(merged["OI_ONLY_ABSORPTION"]),
+            oi_hide_weak_no_spot=bool(merged["OI_HIDE_WEAK_NO_SPOT"]),
+            oi_show_z_subplot=bool(merged["OI_SHOW_Z_SUBPLOT"]),
+            oi_live_enabled=bool(merged["OI_LIVE_ENABLED"]),
             raw=merged,
         )
 
@@ -256,6 +341,19 @@ class ConfigService:
         _write_config(self._config_path, clean)
         self._current = AppSettings.from_raw(clean, self._config_path)
         return clean
+
+    def patch_raw(self, updates: dict[str, Any]) -> AppSettings:
+        """Частично обновляет config.json: меняет только переданные ключи.
+
+        Остальные секции (SYMBOL, настройки Calibrator и т.д.) сохраняются как есть,
+        пересчёт Calibrator не запускается.
+        """
+        raw = self.load_raw()
+        raw.update({str(key): value for key, value in updates.items()})
+        clean = normalize_config(raw)
+        _write_config(self._config_path, clean)
+        self._current = AppSettings.from_raw(clean, self._config_path)
+        return self._current
 
     def reset_defaults(self) -> dict[str, Any]:
         """Сбрасывает config.json к значениям по умолчанию."""

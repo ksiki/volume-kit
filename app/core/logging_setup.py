@@ -33,6 +33,9 @@ def resolve_tool(logger_name: str, explicit: str | None = None) -> str:
         return str(explicit)
 
     name = logger_name or ""
+    if name.startswith(("app.services.oi_regime", "app.ui.workers.oi_regime")):
+        return "OI Regime"
+
     if name.startswith(_SERVICE_LOGGER_PREFIXES) or name.startswith(_UI_LOGGER_PREFIXES):
         return "Calibrator"
 

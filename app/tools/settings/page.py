@@ -150,6 +150,9 @@ class SettingsPage(QWidget):
         tables_grid.setColumnStretch(1, 1)
         main_lay.addLayout(tables_grid)
 
+        # Строка 4: OI & Delta Regime
+        main_lay.addWidget(self._build_oi_regime_card())
+
         main_lay.addStretch(1)
         scroll.setWidget(content)
         root.addWidget(scroll, 1)
@@ -340,6 +343,125 @@ class SettingsPage(QWidget):
 
         return card
 
+    def _build_oi_regime_card(self) -> QFrame:
+        card, lay = _make_section_card(
+            "OI & Delta Regime",
+            "Межбиржевой OI (Binance Futures + Bybit), дельты и robust Z-score. "
+            "Binance OI history доступен только за последние 30 дней.",
+        )
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(10)
+
+        instrument_form = QFormLayout()
+        instrument_form.setSpacing(9)
+        instrument_form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self._oi_tf_combo = QComboBox()
+        prepare_combo_box(self._oi_tf_combo)
+        self._oi_tf_combo.addItems(["5m", "15m", "1h", "4h"])
+
+        self._oi_z_window = QSpinBox()
+        self._oi_z_window.setRange(15, 200)
+
+        self._oi_visible = QSpinBox()
+        self._oi_visible.setRange(60, 400)
+
+        self._oi_refresh = QSpinBox()
+        self._oi_refresh.setRange(0, 120)
+        self._oi_refresh.setSuffix(" сек")
+        self._oi_refresh.setSpecialValueText("выкл")
+
+        self._oi_use_bybit = QCheckBox("Использовать Bybit OI (OI_USE_BYBIT)")
+
+        instrument_form.addRow("ТФ по умолчанию (OI_DEFAULT_TIMEFRAME):", self._oi_tf_combo)
+        instrument_form.addRow("Окно Z-score (OI_Z_WINDOW):", self._oi_z_window)
+        instrument_form.addRow("Видимых баров (OI_VISIBLE_BARS):", self._oi_visible)
+        instrument_form.addRow("Автообновление (OI_REFRESH_SEC):", self._oi_refresh)
+        instrument_form.addRow("", self._oi_use_bybit)
+
+        thresholds_form = QFormLayout()
+        thresholds_form.setSpacing(9)
+        thresholds_form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self._oi_threshold_oi = QDoubleSpinBox()
+        self._oi_threshold_oi.setRange(0.5, 6.0)
+        self._oi_threshold_oi.setDecimals(2)
+        self._oi_threshold_oi.setSingleStep(0.1)
+
+        self._oi_threshold_delta = QDoubleSpinBox()
+        self._oi_threshold_delta.setRange(0.5, 6.0)
+        self._oi_threshold_delta.setDecimals(2)
+        self._oi_threshold_delta.setSingleStep(0.1)
+
+        self._oi_absorption_min_z = QDoubleSpinBox()
+        self._oi_absorption_min_z.setRange(0.5, 5.0)
+        self._oi_absorption_min_z.setDecimals(2)
+        self._oi_absorption_min_z.setSingleStep(0.1)
+
+        self._oi_absorption_ratio = QDoubleSpinBox()
+        self._oi_absorption_ratio.setRange(0.10, 0.49)
+        self._oi_absorption_ratio.setDecimals(2)
+        self._oi_absorption_ratio.setSingleStep(0.05)
+
+        thresholds_form.addRow("Порог ΔOI (OI_THRESHOLD_OI):", self._oi_threshold_oi)
+        thresholds_form.addRow("Порог дельты (OI_THRESHOLD_DELTA):", self._oi_threshold_delta)
+        thresholds_form.addRow(
+            "Мин. Z дельты для поглощения (OI_ABSORPTION_MIN_Z_DELTA):",
+            self._oi_absorption_min_z,
+        )
+        thresholds_form.addRow(
+            "Доля закрытия (OI_ABSORPTION_CLOSE_RATIO):",
+            self._oi_absorption_ratio,
+        )
+
+        spot_form = QFormLayout()
+        spot_form.setSpacing(9)
+        spot_form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self._oi_spot_sync = QDoubleSpinBox()
+        self._oi_spot_sync.setRange(0.3, 4.0)
+        self._oi_spot_sync.setDecimals(2)
+        self._oi_spot_sync.setSingleStep(0.1)
+
+        self._oi_spot_div = QDoubleSpinBox()
+        self._oi_spot_div.setRange(0.2, 4.0)
+        self._oi_spot_div.setDecimals(2)
+        self._oi_spot_div.setSingleStep(0.1)
+
+        self._oi_spot_dead = QDoubleSpinBox()
+        self._oi_spot_dead.setRange(0.05, 1.5)
+        self._oi_spot_dead.setDecimals(2)
+        self._oi_spot_dead.setSingleStep(0.05)
+
+        self._oi_spot_dead_extreme = QDoubleSpinBox()
+        self._oi_spot_dead_extreme.setRange(1.0, 6.0)
+        self._oi_spot_dead_extreme.setDecimals(2)
+        self._oi_spot_dead_extreme.setSingleStep(0.1)
+
+        spot_form.addRow("Z подтверждения спота (OI_SPOT_SYNC_MIN_Z):", self._oi_spot_sync)
+        spot_form.addRow("Z дивергенции спота (OI_SPOT_DIV_MIN_Z):", self._oi_spot_div)
+        spot_form.addRow("Мёртвая зона спота (OI_SPOT_DEAD_MAX_Z):", self._oi_spot_dead)
+        spot_form.addRow(
+            "Экстремум OI без спота (OI_SPOT_DEAD_EXTREME_OI_Z):",
+            self._oi_spot_dead_extreme,
+        )
+
+        grid.addLayout(instrument_form, 0, 0)
+        grid.addLayout(thresholds_form, 0, 1)
+        grid.addLayout(spot_form, 1, 0, 1, 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        lay.addLayout(grid)
+        return card
+
     # ==================== ЗАГРУЗКА / СБОР ДАННЫХ ====================
 
     def load_from_disk(self) -> None:
@@ -372,6 +494,26 @@ class SettingsPage(QWidget):
         self._tz_offset_spin.setValue(int(cfg.get("TZ_OFFSET_HOURS", 0)))
         self._console_top_spin.setValue(int(cfg.get("CONSOLE_TOP_ROWS", 0)))
         self._save_csv_cb.setChecked(bool(cfg.get("SAVE_SORTED_CSV", False)))
+
+        self._oi_tf_combo.setCurrentText(str(cfg.get("OI_DEFAULT_TIMEFRAME", "1h")))
+        self._oi_z_window.setValue(int(cfg.get("OI_Z_WINDOW", 60)))
+        self._oi_visible.setValue(int(cfg.get("OI_VISIBLE_BARS", 200)))
+        self._oi_refresh.setValue(int(cfg.get("OI_REFRESH_SEC", 20)))
+        self._oi_use_bybit.setChecked(bool(cfg.get("OI_USE_BYBIT", True)))
+        self._oi_threshold_oi.setValue(float(cfg.get("OI_THRESHOLD_OI", 2.0)))
+        self._oi_threshold_delta.setValue(float(cfg.get("OI_THRESHOLD_DELTA", 1.5)))
+        self._oi_absorption_min_z.setValue(
+            float(cfg.get("OI_ABSORPTION_MIN_Z_DELTA", 1.5))
+        )
+        self._oi_absorption_ratio.setValue(
+            float(cfg.get("OI_ABSORPTION_CLOSE_RATIO", 0.35))
+        )
+        self._oi_spot_sync.setValue(float(cfg.get("OI_SPOT_SYNC_MIN_Z", 1.0)))
+        self._oi_spot_div.setValue(float(cfg.get("OI_SPOT_DIV_MIN_Z", 0.8)))
+        self._oi_spot_dead.setValue(float(cfg.get("OI_SPOT_DEAD_MAX_Z", 0.3)))
+        self._oi_spot_dead_extreme.setValue(
+            float(cfg.get("OI_SPOT_DEAD_EXTREME_OI_Z", 2.5))
+        )
 
         # Таблица ТФ -> ATR / Half-Life
         atr_map: dict[str, Any] = cfg.get("ATR_LOOKBACK_DAYS", {})
@@ -444,7 +586,10 @@ class SettingsPage(QWidget):
                 raise ValueError(f"Правило {r + 1}: шаг округления должен быть > 0")
             rules.append([lim_val, step_val])
 
-        return {
+        # Берём актуальный сырой конфиг, чтобы не затереть ключи, которых нет на форме
+        # (например, UI-состояние тулбара OI & Delta Regime).
+        cfg = self._config.load_raw()
+        cfg.update({
             "SYMBOL": self._symbol_edit.text().strip().upper(),
             "SPOT_CLUSTERS": self._spot_clusters_spin.value(),
             "FUTURES_CLUSTERS": self._fut_clusters_spin.value(),
@@ -463,7 +608,21 @@ class SettingsPage(QWidget):
             "TZ_OFFSET_HOURS": self._tz_offset_spin.value(),
             "CONSOLE_TOP_ROWS": self._console_top_spin.value(),
             "SAVE_SORTED_CSV": self._save_csv_cb.isChecked(),
-        }
+            "OI_DEFAULT_TIMEFRAME": self._oi_tf_combo.currentText(),
+            "OI_Z_WINDOW": self._oi_z_window.value(),
+            "OI_THRESHOLD_OI": round(self._oi_threshold_oi.value(), 2),
+            "OI_THRESHOLD_DELTA": round(self._oi_threshold_delta.value(), 2),
+            "OI_ABSORPTION_CLOSE_RATIO": round(self._oi_absorption_ratio.value(), 2),
+            "OI_ABSORPTION_MIN_Z_DELTA": round(self._oi_absorption_min_z.value(), 2),
+            "OI_SPOT_SYNC_MIN_Z": round(self._oi_spot_sync.value(), 2),
+            "OI_SPOT_DIV_MIN_Z": round(self._oi_spot_div.value(), 2),
+            "OI_SPOT_DEAD_MAX_Z": round(self._oi_spot_dead.value(), 2),
+            "OI_SPOT_DEAD_EXTREME_OI_Z": round(self._oi_spot_dead_extreme.value(), 2),
+            "OI_USE_BYBIT": self._oi_use_bybit.isChecked(),
+            "OI_VISIBLE_BARS": self._oi_visible.value(),
+            "OI_REFRESH_SEC": self._oi_refresh.value(),
+        })
+        return cfg
 
     # ==================== ОБРАБОТЧИКИ КНОПОК ====================
 

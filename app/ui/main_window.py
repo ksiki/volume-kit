@@ -179,7 +179,9 @@ class MainWindow(QMainWindow):
             lay.addWidget(section)
 
             for tool_cls in tool_classes:
-                self._add_nav_button(lay, tool_cls.tool_id, tool_cls.nav_label)
+                # Экранируем амперсанд, иначе Qt трактует его как мнемонику (OI & Delta -> OI _Delta)
+                nav_text = tool_cls.nav_label.replace("&", "&&")
+                self._add_nav_button(lay, tool_cls.tool_id, nav_text)
 
         return sidebar
 

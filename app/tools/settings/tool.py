@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from PySide6.QtWidgets import QWidget
 
-from app.core.tools import BaseTool, ToolContext, register_tool
+from app.core.tools import BaseTool, register_tool
 from app.tools.settings.page import SettingsPage
 
 
@@ -28,8 +28,15 @@ class SettingsTool(BaseTool):
         page.toast_requested.connect(self.context.host.show_toast)
         return page
 
+    def on_shown(self) -> None:
+        """Подтягивает актуальный config.json при каждом показе вкладки настроек."""
+        if self.is_widget_created:
+            self.page.load_from_disk()
+
     def _on_saved(self, cfg: dict[str, Any], recalculate: bool) -> None:
         self.context.host.set_symbol(str(cfg.get("SYMBOL", self.context.config.current.symbol)))
+        if self.context.commands.is_registered("oi_regime.reload_config"):
+            self.context.commands.invoke("oi_regime.reload_config")
         if recalculate:
             self.context.host.show_toast("✓ Настройки сохранены — запускаю пересчёт...")
             self.context.host.switch_tool("calibrator")
