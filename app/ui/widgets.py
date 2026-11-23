@@ -4,9 +4,11 @@ from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QListView,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -33,6 +35,16 @@ def repolish(widget: QWidget) -> None:
         style.unpolish(widget)
         style.polish(widget)
     widget.update()
+
+
+def prepare_combo_box(combo: QComboBox, max_visible_items: int = 10) -> None:
+    """Задаёт явный QListView: стабильный светлый попап и корректная позиция списка."""
+    view = QListView()
+    view.setUniformItemSizes(True)
+    view.setFrameShape(QFrame.Shape.NoFrame)
+    view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    combo.setView(view)
+    combo.setMaxVisibleItems(max_visible_items)
 
 
 class ExchangeDot(QFrame):

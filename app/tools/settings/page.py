@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.config import ConfigService
+from app.ui.widgets import prepare_combo_box
 
 
 def _make_section_card(title: str, subtitle: str = "") -> tuple[QFrame, QVBoxLayout]:
@@ -173,6 +174,7 @@ class SettingsPage(QWidget):
         self._fut_clusters_spin.setRange(1, 500)
 
         self._cluster_mode_combo = QComboBox()
+        prepare_combo_box(self._cluster_mode_combo)
         self._cluster_mode_combo.addItems(["round", "floor"])
 
         form.addRow("Тикер (SYMBOL):", self._symbol_edit)

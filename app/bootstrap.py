@@ -7,7 +7,7 @@ import sys
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--log-level=3")
 
 from PySide6.QtCore import QCoreApplication, Qt
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtGui import QColor, QFont, QIcon, QPalette
 from PySide6.QtWidgets import QApplication
 
 # Импорт QtWebEngineWidgets до создания QApplication гарантирует корректную инициализацию контекста
@@ -24,6 +24,41 @@ from app.ui.main_window import MainWindow
 from app.ui.theme import APP_STYLESHEET, FONT_FAMILY_UI
 
 
+def _apply_light_appearance(app: QApplication) -> None:
+    """Фиксирует светлую схему Qt, чтобы тёмная тема Windows не ломала попапы и меню."""
+    style_hints = app.styleHints()
+    if hasattr(style_hints, "setColorScheme"):
+        style_hints.setColorScheme(Qt.ColorScheme.Light)
+
+    text = QColor("#0F172A")
+    muted = QColor("#94A3B8")
+    white = QColor("#FFFFFF")
+
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#F4F6F9"))
+    palette.setColor(QPalette.ColorRole.WindowText, text)
+    palette.setColor(QPalette.ColorRole.Base, white)
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#F1F5F9"))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, white)
+    palette.setColor(QPalette.ColorRole.ToolTipText, text)
+    palette.setColor(QPalette.ColorRole.Text, text)
+    palette.setColor(QPalette.ColorRole.Button, white)
+    palette.setColor(QPalette.ColorRole.ButtonText, text)
+    palette.setColor(QPalette.ColorRole.BrightText, white)
+    palette.setColor(QPalette.ColorRole.Link, QColor("#2563EB"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("#2563EB"))
+    palette.setColor(QPalette.ColorRole.HighlightedText, white)
+    palette.setColor(QPalette.ColorRole.PlaceholderText, muted)
+    for role in (
+        QPalette.ColorRole.WindowText,
+        QPalette.ColorRole.Text,
+        QPalette.ColorRole.ButtonText,
+    ):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, muted)
+
+    app.setPalette(palette)
+
+
 def start_gui() -> None:
     configure_logging(console=True)
 
@@ -34,6 +69,7 @@ def start_gui() -> None:
     app.setApplicationDisplayName("Volume Kit")
     app.setOrganizationName("Volume Kit")
     app.setStyle("Fusion")
+    _apply_light_appearance(app)
 
     app_icon = QIcon()
     path = icon_path()

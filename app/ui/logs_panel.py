@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from app.core.logging_setup import SESSION_ID, available_log_dates, read_recent_logs
 from app.core.paths import LOGS_DIR
 
-from .widgets import copy_to_clipboard
+from .widgets import copy_to_clipboard, prepare_combo_box
 
 _TOOL_COLORS: dict[str, tuple[str, str]] = {
     "Calibrator": ("#DBEAFE", "#1D4ED8"),
@@ -118,16 +118,19 @@ class LogsPanel(QFrame):
         filters.setSpacing(6)
 
         self._date_combo = QComboBox()
-        self._date_combo.setMinimumWidth(132)
+        prepare_combo_box(self._date_combo)
+        self._date_combo.setMinimumWidth(150)
         self._date_combo.setToolTip("День логов")
         self._date_combo.currentIndexChanged.connect(self._on_date_filter_changed)
 
         self._tool_combo = QComboBox()
-        self._tool_combo.setMinimumWidth(112)
+        prepare_combo_box(self._tool_combo)
+        self._tool_combo.setMinimumWidth(130)
         self._tool_combo.setToolTip("Инструмент-источник")
         self._tool_combo.currentIndexChanged.connect(self._on_tool_filter_changed)
 
         self._level_combo = QComboBox()
+        prepare_combo_box(self._level_combo)
         self._level_combo.setMinimumWidth(88)
         self._level_combo.setToolTip("Минимальный уровень")
         self._level_combo.addItem("Все", "ALL")

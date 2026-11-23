@@ -5,6 +5,7 @@ app/data_cache
 app/web_profile
 app/config.json
 app/logs/
+assets/icon.ico
 __pycache__
 
 # Byte-compiled / optimized / DLL files
@@ -40,6 +41,7 @@ MANIFEST
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+!VolumeKit.spec
 
 # Installer logs
 pip-log.txt

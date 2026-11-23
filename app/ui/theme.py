@@ -561,9 +561,62 @@ QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border: 1.5px solid {PALETTE["accent"]};
     background-color: #FFFFFF;
 }}
+QComboBox {{
+    combobox-popup: 0;
+    padding-right: 26px;
+}}
 QComboBox::drop-down {{
-    border: none;
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
     width: 24px;
+    border: none;
+    background-color: transparent;
+}}
+QComboBox QAbstractItemView {{
+    background-color: #FFFFFF;
+    color: {PALETTE["text"]};
+    border: 1px solid {PALETTE["border_strong"]};
+    border-radius: 7px;
+    padding: 4px;
+    outline: 0;
+    selection-background-color: {PALETTE["accent_soft"]};
+    selection-color: {PALETTE["accent_hover"]};
+}}
+QComboBox QAbstractItemView::item {{
+    min-height: 24px;
+    padding: 4px 8px;
+    color: {PALETTE["text"]};
+    background-color: transparent;
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {PALETTE["surface_hover"]};
+    color: {PALETTE["text"]};
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background-color: {PALETTE["accent_soft"]};
+    color: {PALETTE["accent_hover"]};
+}}
+
+QMenu {{
+    background-color: #FFFFFF;
+    color: {PALETTE["text"]};
+    border: 1px solid {PALETTE["border_strong"]};
+    border-radius: 8px;
+    padding: 4px;
+}}
+QMenu::item {{
+    padding: 5px 18px;
+    border-radius: 5px;
+    background-color: transparent;
+}}
+QMenu::item:selected {{
+    background-color: {PALETTE["accent_soft"]};
+    color: {PALETTE["accent_hover"]};
+}}
+QMenu::separator {{
+    height: 1px;
+    background: {PALETTE["border"]};
+    margin: 4px 8px;
 }}
 
 QCheckBox {{
