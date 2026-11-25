@@ -298,7 +298,7 @@ class CalibratorPage(QWidget):
         lay.setSpacing(12)
 
         top = QHBoxLayout()
-        self._load_title = QLabel("Калибровка...")
+        self._load_title = QLabel("Готов к расчёту")
         self._load_title.setObjectName("CardTitle")
 
         self._load_pct = QLabel("0%")
@@ -306,6 +306,7 @@ class CalibratorPage(QWidget):
             "font-family: 'Cascadia Code', Consolas, monospace; "
             "font-size: 14px; font-weight: 700; color: #2563EB;"
         )
+        self._load_pct.hide()
 
         top.addWidget(self._load_title)
         top.addStretch(1)
@@ -316,9 +317,10 @@ class CalibratorPage(QWidget):
         self._load_progress.setObjectName("ThinProgress")
         self._load_progress.setRange(0, 100)
         self._load_progress.setTextVisible(False)
+        self._load_progress.hide()
         lay.addWidget(self._load_progress)
 
-        self._load_stage = QLabel("Инициализация...")
+        self._load_stage = QLabel("Нажмите «Рассчитать» для запуска калибровки")
         self._load_stage.setObjectName("SettingsHint")
         lay.addWidget(self._load_stage)
 
@@ -330,6 +332,12 @@ class CalibratorPage(QWidget):
 
         actions = QHBoxLayout()
         actions.addStretch(1)
+        self._start_btn = QPushButton("Рассчитать")
+        self._start_btn.setObjectName("PrimaryBtn")
+        self._start_btn.setFixedHeight(32)
+        self._start_btn.setToolTip("Запустить калибровку вручную")
+        self._start_btn.clicked.connect(self.recalc_requested.emit)
+        actions.addWidget(self._start_btn)
         btn_logs = QPushButton("Все логи")
         btn_logs.setObjectName("SecondaryBtn")
         btn_logs.clicked.connect(self.open_logs_requested.emit)
@@ -449,9 +457,9 @@ class CalibratorPage(QWidget):
         lay.setContentsMargins(16, 10, 16, 10)
         lay.setSpacing(12)
 
-        self._status_lbl = QLabel("Готово")
+        self._status_lbl = QLabel("Готов к расчёту")
         self._status_lbl.setObjectName("CalibStatusLabel")
-        self._status_lbl.setProperty("status", "done")
+        self._status_lbl.setProperty("status", "idle")
         repolish(self._status_lbl)
 
         self._progress = QProgressBar()
@@ -478,6 +486,8 @@ class CalibratorPage(QWidget):
     def set_running(self, symbol: str, progress: int, stage: str) -> None:
         self._dash_error_banner.hide()
         self._recalc_btn.setEnabled(False)
+        self._start_btn.setEnabled(False)
+        self._start_btn.hide()
 
         if self._has_report:
             self._set_status("running", stage)
@@ -488,9 +498,37 @@ class CalibratorPage(QWidget):
         else:
             self._load_title.setText(f"Калибровка {symbol}")
             self._load_pct.setText(f"{progress}%")
+            self._load_pct.show()
             self._load_progress.setValue(progress)
+            self._load_progress.show()
             self._load_stage.setText(stage)
             self._stack.setCurrentIndex(0)
+
+    def set_idle(
+        self, hint: str = "Нажмите «Рассчитать» для запуска калибровки"
+    ) -> None:
+        """Нейтральное состояние готовности без запуска расчёта."""
+        self._load_title.setText("Готов к расчёту")
+        self._load_pct.hide()
+        self._load_progress.hide()
+        self._load_stage.setText(hint)
+        self._start_btn.show()
+        self._start_btn.setEnabled(True)
+        self._stack.setCurrentIndex(0)
+
+    def mark_stale(self) -> None:
+        """Параметры изменились — расчёт не запускаем, просим пользователя подтвердить."""
+        if self._has_report:
+            self._dash_error_banner.hide()
+            self._cards_opacity.setOpacity(1.0)
+            self._progress.hide()
+            self._recalc_btn.setEnabled(True)
+            self._set_status("stale", "Параметры изменены — нажмите «Пересчитать»")
+            self._stack.setCurrentIndex(2)
+        else:
+            self.set_idle(
+                "Параметры изменены — нажмите «Рассчитать» для запуска калибровки"
+            )
 
     def update_progress(self, progress: int, stage: str) -> None:
         if self._has_report:
@@ -524,6 +562,7 @@ class CalibratorPage(QWidget):
         self._cards_opacity.setOpacity(1.0)
         self._progress.hide()
         self._recalc_btn.setEnabled(True)
+        self._start_btn.setEnabled(True)
 
         # Очищаем прошлые карточки
         while self._cards_grid.count():
@@ -551,6 +590,7 @@ class CalibratorPage(QWidget):
         self._progress.hide()
         self._cards_opacity.setOpacity(1.0)
         self._recalc_btn.setEnabled(True)
+        self._start_btn.setEnabled(True)
         self._set_status("error", "Ошибка расчёта")
 
         if self._has_report:

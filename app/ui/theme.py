@@ -238,6 +238,9 @@ QLabel#CalibStatusLabel[status="done"] {{
 QLabel#CalibStatusLabel[status="error"] {{
     color: #B91C1C;
 }}
+QLabel#CalibStatusLabel[status="stale"] {{
+    color: #B45309;
+}}
 
 /* ==================== КНОПКИ ==================== */
 QPushButton#PrimaryBtn {{
@@ -884,6 +887,19 @@ QLabel#OiPill[variant="live"] {{
     border-color: #FECACA;
     color: #B91C1C;
     font-weight: 800;
+}}
+QLabel#OiPill[variant="passive"] {{
+    background-color: #FFFBEB;
+    border-color: #FDE68A;
+    color: #92400E;
+}}
+QFrame#OiFeedCard[selected="true"] {{
+    background-color: {PALETTE["accent_soft"]};
+    border: 1.5px solid {PALETTE["accent_border"]};
+}}
+QFrame#OiFeedCard[selected="true"]:hover {{
+    background-color: #E8F0FE;
+    border-color: {PALETTE["accent"]};
 }}
 QFrame#OiChartTooltip {{
     background-color: #0F172A;

@@ -355,6 +355,8 @@ class OIRegimeTool(BaseTool):
         symbol = self.context.config.current.symbol
         cached = self._cache.get((symbol, params.timeframe))
         if cached is None:
+            if self._page_visible:
+                self.start_fetch("full", manual=False)
             return
         try:
             bundle = build_bundle(cached, params, symbol)
@@ -365,6 +367,26 @@ class OIRegimeTool(BaseTool):
             return
         self._bundle = bundle
         self.page.apply_bundle(bundle)
+
+        # Если окно Z-score выросло, в кэше может не хватить истории:
+        # моментально показываем пересчёт и дозагружаем недостающие свечи.
+        required = int(params.visible_bars) + int(params.z_window) + 10
+        now_ms = int(time.time() * 1000)
+        closed_count = 0
+        if cached.fut_klines is not None and not cached.fut_klines.empty:
+            closed_count = int(
+                (cached.fut_klines.index + int(cached.step_ms) <= now_ms).sum()
+            )
+        if closed_count < required:
+            log.info(
+                "OI Regime %s %s: в кэше %d закрытых свечей при требуемых %d — дозагрузка истории",
+                symbol,
+                params.timeframe,
+                closed_count,
+                required,
+                extra={"tool": "OI Regime"},
+            )
+            self.start_fetch("full", manual=False)
 
     def _on_defaults_reset(self, timeframe_changed: bool) -> None:
         """Реакция на «↺ Сброс»: полный refresh при смене ТФ, иначе пересчёт из кэша."""
@@ -439,7 +461,13 @@ class OIRegimeTool(BaseTool):
         worker = self._worker
         if worker is not None and worker.isRunning():
             worker.requestInterruption()
-            if not worker.wait(800):
+            if not worker.wait(2000):
+                # Крайний случай: HTTP-сессия уже закрывается в finally воркера,
+                # но если поток всё ещё висит на сетевом таймауте — аварийно завершаем.
+                log.warning(
+                    "OI Regime: воркер не завершился за 2 с — принудительное завершение",
+                    extra={"tool": "OI Regime"},
+                )
                 worker.terminate()
                 worker.wait(500)
         self._worker = None

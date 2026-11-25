@@ -82,5 +82,9 @@
   "OI_ONLY_ABSORPTION": false,
   "OI_HIDE_WEAK_NO_SPOT": true,
   "OI_SHOW_Z_SUBPLOT": true,
-  "OI_LIVE_ENABLED": true
+  "OI_LIVE_ENABLED": true,
+  "OI_SHOW_MULTI_BAR": true,
+  "OI_SHOW_TRAP_LEVELS": true,
+  "OI_SHOW_SPOT_Z": false,
+  "OI_SHOW_STANDALONE_ABSORPTION": false
 }

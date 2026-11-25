@@ -5,7 +5,11 @@ import logging
 from PySide6.QtCore import QObject, QThread, Signal
 
 from app.services.oi_regime.engine import build_bundle
-from app.services.oi_regime.fetcher import OIRegimeFetcher, RawRegimeData
+from app.services.oi_regime.fetcher import (
+    OIRegimeFetcher,
+    RawRegimeData,
+    RegimeFetchCancelled,
+)
 from app.services.oi_regime.models import RegimeParams
 
 log = logging.getLogger(__name__)
@@ -41,7 +45,7 @@ class OIRegimeWorker(QThread):
             self.stage_changed.emit(text)
 
     def run(self) -> None:
-        fetcher = OIRegimeFetcher()
+        fetcher = OIRegimeFetcher(cancel_check=self.isInterruptionRequested)
         try:
             self._stage("Загрузка данных Binance/Bybit...")
             if self._mode == "live" and self._cached_raw is not None:
@@ -57,6 +61,9 @@ class OIRegimeWorker(QThread):
             if self.isInterruptionRequested():
                 return
             self.finished_ok.emit(self._mode, bundle, raw)
+        except RegimeFetchCancelled:
+            # Штатная отмена: выходим молча, без сигнала failed.
+            log.info("Загрузка OI Regime (%s) отменена", self._mode, extra={"tool": "OI Regime"})
         except Exception as exc:
             log.exception(
                 "Ошибка OI Regime (%s): %s", self._mode, exc,

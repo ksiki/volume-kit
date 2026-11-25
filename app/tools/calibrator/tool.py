@@ -2,7 +2,6 @@
 
 from typing import Any, Callable, cast
 
-from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QWidget
 
 from app.core.logging_setup import log_event
@@ -24,10 +23,10 @@ class CalibratorTool(BaseTool):
     def __init__(self, context: ToolContext) -> None:
         super().__init__(context)
         self._worker: CalibrationWorker | None = None
-        self._started: bool = False
         self._unsubscribe_logs: Callable[[], None] | None = None
 
         context.commands.register("calibration.start", self.start_calibration)
+        context.commands.register("calibration.mark_stale", self.mark_stale)
 
     @property
     def page(self) -> CalibratorPage:
@@ -39,13 +38,13 @@ class CalibratorTool(BaseTool):
         page.open_logs_requested.connect(self.context.host.open_logs)
         page.recalc_requested.connect(lambda: self.start_calibration(reload_cfg=True))
         self._unsubscribe_logs = self.context.host.subscribe_logs(self._on_log_entry)
+        page.set_idle()
         return page
 
-    def on_first_shown(self) -> None:
-        # Запускаем калибратор сразу после первой отрисовки инструмента
-        if not self._started:
-            self._started = True
-            QTimer.singleShot(80, lambda: self.start_calibration(reload_cfg=False))
+    def mark_stale(self) -> None:
+        """Помечает результаты устаревшими после смены тикера/настроек."""
+        if self.is_widget_created:
+            self.page.mark_stale()
 
     # ==================== КАЛИБРАЦИЯ ====================
 

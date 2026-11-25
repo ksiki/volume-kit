@@ -11,6 +11,7 @@ REGIME_META: dict[str, tuple[str, str, str]] = {
 
 SPOT_STATUS_SYNC = "SYNC"
 SPOT_STATUS_DIV = "DIV"
+SPOT_STATUS_PASSIVE = "PASSIVE"
 SPOT_STATUS_NEUTRAL = "NEUTRAL"
 SPOT_STATUS_UNAVAILABLE = "UNAVAILABLE"
 
@@ -25,10 +26,15 @@ class RegimeParams:
     threshold_delta: float = 1.5
     absorption_close_ratio: float = 0.35
     absorption_min_z_delta: float = 1.5
+    absorption_effort_range_ratio: float = 0.75
     spot_sync_min_z: float = 1.0
     spot_div_min_z: float = 0.8
     spot_dead_max_z: float = 0.3
     spot_dead_extreme_oi_z: float = 2.5
+    multi_bar_window: int = 4
+    multi_bar_threshold_oi: float = 2.2
+    multi_bar_threshold_delta: float = 1.8
+    trap_level_min_z: float = 2.5
     use_bybit: bool = True
     visible_bars: int = 200
     tz_offset_hours: int = 0
@@ -72,8 +78,19 @@ class CandleBar:
     absorption_side: str | None
     absorption_reason: str | None
     spot_status: str
-    is_squeeze: bool = False
-    liq_volume_base: float | None = None
+
+    # ---- расширенный контекст (Этап 1.2) ----
+    delta_oi_pct: float | None = None
+    bybit_oi_share: float | None = None
+    is_bybit_led: bool = False
+    live_progress: float = 1.0
+    range_ratio: float | None = None
+    is_standalone_absorption: bool = False
+    basis_pct: float | None = None
+    funding_rate: float | None = None
+    multi_regime_key: str | None = None
+    z_multi_doi: float | None = None
+    z_multi_delta: float | None = None
 
 
 @dataclass
@@ -99,13 +116,85 @@ class AnomalyEvent:
     is_absorption: bool
     absorption_reason: str | None
     is_live: bool
-    is_squeeze: bool = False
-    liq_volume_base: float | None = None
+
+    # ---- контекст события (Этап 1.2) ----
+    delta_oi_pct: float | None = None
+    is_bybit_led: bool = False
+    live_progress: float = 1.0
+    basis_pct: float | None = None
+    funding_rate: float | None = None
+    is_standalone_absorption: bool = False
 
     @property
     def strength(self) -> float:
         """Сила события для сортировки и отображения."""
         return max(abs(self.z_doi), abs(self.z_fut_delta))
+
+
+@dataclass
+class TrapLevel:
+    """Проекция уровня «застрявших» участников по сильной свече."""
+
+    start_index: int
+    end_index: int
+    open_time_ms: int
+    price_low: float
+    price_high: float
+    price_mid: float
+    side: str  # "SUPPORT" | "RESISTANCE"
+    regime_key: str
+    strength: float
+    is_mitigated: bool = False
+
+
+@dataclass(frozen=True)
+class MultiBarZone:
+    """Непрерывная зона реального многобарного накопления/разгрузки."""
+
+    start_index: int
+    end_index: int
+    start_time_ms: int
+    end_time_ms: int
+    regime_key: str
+    regime_label: str
+    color: str
+    bar_count: int
+    sum_delta_oi: float
+    sum_delta_oi_pct: float | None
+    sum_fut_delta: float
+    peak_z_doi: float
+    peak_z_delta: float
+    price_low: float
+    price_high: float
+
+
+@dataclass(frozen=True)
+class OutcomeHorizonRow:
+    """Медианная отработка события на одном горизонте закрытых баров."""
+
+    horizon: int
+    n: int
+    mfe_pct: float | None = None
+    mae_pct: float | None = None
+    close_pct: float | None = None
+
+
+@dataclass
+class RegimeOutcomeRow:
+    """Статистика отработки для одной группы событий (режим/поглощение)."""
+
+    regime_key: str
+    label: str
+    count: int
+    horizons: list[OutcomeHorizonRow] = field(default_factory=list)
+
+
+@dataclass
+class OutcomeStats:
+    """Сводная статистика отработки по текущим параметрам расчёта."""
+
+    rows: list[RegimeOutcomeRow] = field(default_factory=list)
+    generated_bars: int = 0
 
 
 @dataclass
@@ -128,6 +217,10 @@ class RegimeBundle:
     updated_at_ms: int = 0
     step_ms: int = 3_600_000
     live_open_time_ms: int | None = None
+    trap_levels: list[TrapLevel] = field(default_factory=list)
+    multi_zones: list[MultiBarZone] = field(default_factory=list)
+    outcome_stats: OutcomeStats = field(default_factory=OutcomeStats)
+    oi_unavailable_before_index: int | None = None
 
     @property
     def last_price(self) -> float | None:

@@ -38,8 +38,12 @@ class SettingsTool(BaseTool):
         if self.context.commands.is_registered("oi_regime.reload_config"):
             self.context.commands.invoke("oi_regime.reload_config")
         if recalculate:
-            self.context.host.show_toast("✓ Настройки сохранены — запускаю пересчёт...")
             self.context.host.switch_tool("calibrator")
-            self.context.commands.invoke("calibration.start", reload_cfg=True)
+        if self.context.commands.is_registered("calibration.mark_stale"):
+            self.context.commands.invoke("calibration.mark_stale")
+        if recalculate:
+            self.context.host.show_toast(
+                "✓ Настройки сохранены — нажмите «Пересчитать» в Calibrator"
+            )
         else:
             self.context.host.show_toast("✓ Настройки сохранены в config.json")

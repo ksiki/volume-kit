@@ -70,6 +70,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "OI_HIDE_WEAK_NO_SPOT": False,
     "OI_SHOW_Z_SUBPLOT": True,
     "OI_LIVE_ENABLED": True,
+    # Новые оверлеи графика (по умолчанию минимально навязчивы)
+    "OI_SHOW_MULTI_BAR": False,
+    "OI_SHOW_TRAP_LEVELS": False,
+    "OI_SHOW_SPOT_Z": False,
+    "OI_SHOW_STANDALONE_ABSORPTION": False,
 }
 
 
@@ -219,6 +224,12 @@ def normalize_config(data: dict[str, Any]) -> dict[str, Any]:
         "OI_HIDE_WEAK_NO_SPOT": bool(merged["OI_HIDE_WEAK_NO_SPOT"]),
         "OI_SHOW_Z_SUBPLOT": bool(merged["OI_SHOW_Z_SUBPLOT"]),
         "OI_LIVE_ENABLED": bool(merged["OI_LIVE_ENABLED"]),
+        "OI_SHOW_MULTI_BAR": bool(merged["OI_SHOW_MULTI_BAR"]),
+        "OI_SHOW_TRAP_LEVELS": bool(merged["OI_SHOW_TRAP_LEVELS"]),
+        "OI_SHOW_SPOT_Z": bool(merged["OI_SHOW_SPOT_Z"]),
+        "OI_SHOW_STANDALONE_ABSORPTION": bool(
+            merged["OI_SHOW_STANDALONE_ABSORPTION"]
+        ),
     }
 
 
@@ -262,6 +273,10 @@ class AppSettings:
     oi_hide_weak_no_spot: bool
     oi_show_z_subplot: bool
     oi_live_enabled: bool
+    oi_show_multi_bar: bool
+    oi_show_trap_levels: bool
+    oi_show_spot_z: bool
+    oi_show_standalone_absorption: bool
     raw: dict[str, Any]
 
     @classmethod
@@ -306,6 +321,12 @@ class AppSettings:
             oi_hide_weak_no_spot=bool(merged["OI_HIDE_WEAK_NO_SPOT"]),
             oi_show_z_subplot=bool(merged["OI_SHOW_Z_SUBPLOT"]),
             oi_live_enabled=bool(merged["OI_LIVE_ENABLED"]),
+            oi_show_multi_bar=bool(merged["OI_SHOW_MULTI_BAR"]),
+            oi_show_trap_levels=bool(merged["OI_SHOW_TRAP_LEVELS"]),
+            oi_show_spot_z=bool(merged["OI_SHOW_SPOT_Z"]),
+            oi_show_standalone_absorption=bool(
+                merged["OI_SHOW_STANDALONE_ABSORPTION"]
+            ),
             raw=merged,
         )
 

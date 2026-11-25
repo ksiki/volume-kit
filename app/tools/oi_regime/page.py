@@ -6,16 +6,22 @@ import logging
 from dataclasses import replace
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -25,6 +31,7 @@ from app.services.oi_regime.models import (
     SPOT_STATUS_DIV,
     SPOT_STATUS_SYNC,
     AnomalyEvent,
+    OutcomeStats,
     RegimeBundle,
     RegimeParams,
 )
@@ -35,6 +42,99 @@ from app.ui.widgets import repolish
 log = logging.getLogger(__name__)
 
 SAVE_DEBOUNCE_MS = 300
+
+_LAYER_DEFAULTS = {
+    "multi_bar": ("OI_SHOW_MULTI_BAR", "Мульти-бар режимы"),
+    "trap_levels": ("OI_SHOW_TRAP_LEVELS", "Уровни ловушек"),
+    "standalone": ("OI_SHOW_STANDALONE_ABSORPTION", "Поглощения без OI"),
+    "spot_z": ("OI_SHOW_SPOT_Z", "Спот на Z-графике"),
+}
+
+_OUTCOME_COLUMNS = ("3 бар", "6 бар", "12 бар")
+
+_LAYER_SETTINGS_ATTR = {
+    "multi_bar": "oi_show_multi_bar",
+    "trap_levels": "oi_show_trap_levels",
+    "standalone": "oi_show_standalone_absorption",
+    "spot_z": "oi_show_spot_z",
+}
+
+
+class OutcomeStatsDialog(QDialog):
+    """Лёгкое окно со статистикой отработки по режимам."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Статистика отработки · OI & Delta Regime")
+        self.setModal(False)
+        self.resize(760, 380)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+        self._hint = QLabel(
+            "Медианные движения в % после события: MFE (максимум вверх), "
+            "MAE (максимум вниз), закрытие через H закрытых свечей."
+        )
+        self._hint.setObjectName("SettingsHint")
+        self._hint.setWordWrap(True)
+        lay.addWidget(self._hint)
+        self._table = QTableWidget(0, 2 + len(_OUTCOME_COLUMNS) * 3)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setAlternatingRowColors(True)
+        header = ["Режим", "N"]
+        for column in _OUTCOME_COLUMNS:
+            header.extend([f"MFE {column}", f"MAE {column}", f"Закр. {column}"])
+        self._table.setHorizontalHeaderLabels(header)
+        self._table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        lay.addWidget(self._table, 1)
+        self._close_btn = QPushButton("Закрыть")
+        self._close_btn.setObjectName("SecondaryBtn")
+        self._close_btn.clicked.connect(self.close)
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        footer.addWidget(self._close_btn)
+        lay.addLayout(footer)
+
+    def set_stats(self, stats: OutcomeStats | None) -> None:
+        self._table.setRowCount(0)
+        if stats is None or not stats.rows:
+            self._hint.setText("Статистика недоступна: нет закрытых событий в видимом окне.")
+            return
+        self._hint.setText(
+            f"Событий в выборке: {stats.generated_bars} закрытых баров. "
+            "Медианные MFE/MAE и результат через 3/6/12 закрытых свечей."
+        )
+        for row in stats.rows:
+            position = self._table.rowCount()
+            self._table.insertRow(position)
+            self._table.setItem(position, 0, QTableWidgetItem(row.label))
+            self._table.setItem(position, 1, QTableWidgetItem(str(row.count)))
+            column = 2
+            by_horizon = {item.horizon: item for item in row.horizons}
+            for horizon in (3, 6, 12):
+                item = by_horizon.get(horizon)
+                if item is None or item.n == 0:
+                    values = ("—", "—", "—")
+                else:
+                    values = (
+                        _fmt_pct(item.mfe_pct),
+                        _fmt_pct(item.mae_pct),
+                        _fmt_pct(item.close_pct),
+                    )
+                for value in values:
+                    self._table.setItem(position, column, QTableWidgetItem(value))
+                    column += 1
+
+
+def _fmt_pct(value: float | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:+.2f}%"
+
 
 _PRESETS: tuple[tuple[str, str, float, float], ...] = (
     ("strict", "Строгий", 2.5, 2.0),
@@ -69,6 +169,8 @@ class OIRegimePage(QWidget):
         self._updating = False
         self._refresh_sec = int(refresh_sec)
         self._tf = params.timeframe
+        self._layer_actions: dict[str, QAction] = {}
+        self._stats_dialog: OutcomeStatsDialog | None = None
         self._params_timer = QTimer(self)
         self._params_timer.setSingleShot(True)
         self._params_timer.setInterval(110)
@@ -220,9 +322,34 @@ class OIRegimePage(QWidget):
         self._z_cb.setChecked(True)
         self._z_cb.toggled.connect(self._on_zscore_toggled)
 
+        self._layers_btn = QPushButton("Слои ▾")
+        self._layers_btn.setObjectName("FilterChip")
+        self._layers_btn.setMinimumHeight(26)
+        self._layers_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._layers_btn.setToolTip("Дополнительные слои графика")
+        self._layers_menu = QMenu(self._layers_btn)
+        for key, (config_key, label) in _LAYER_DEFAULTS.items():
+            action = self._layers_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(bool(DEFAULT_CONFIG[config_key]))
+            action.toggled.connect(
+                lambda checked, layer=key: self._on_layer_toggled(layer, checked)
+            )
+            self._layer_actions[key] = action
+        self._layers_btn.clicked.connect(self._show_layers_menu)
+        repolish(self._layers_btn)
+
+        self._stats_btn = QPushButton("📊 Статистика")
+        self._stats_btn.setObjectName("SecondaryBtn")
+        self._stats_btn.setFixedHeight(26)
+        self._stats_btn.setToolTip("Статистика отработки по типам режимов")
+        self._stats_btn.clicked.connect(self._show_stats)
+
         row2.addWidget(self._abs_cb)
         row2.addWidget(self._weak_cb)
         row2.addWidget(self._z_cb)
+        row2.addWidget(self._layers_btn)
+        row2.addWidget(self._stats_btn)
         row2.addStretch(1)
 
         self._toi_spin = QDoubleSpinBox()
@@ -328,7 +455,18 @@ class OIRegimePage(QWidget):
             self._weak_cb.setChecked(bool(hide_weak))
         with QSignalBlocker(self._z_cb):
             self._z_cb.setChecked(bool(show_z))
+        for key, (config_key, _label) in _LAYER_DEFAULTS.items():
+            default = bool(DEFAULT_CONFIG[config_key])
+            if settings is not None:
+                value = bool(getattr(settings, _LAYER_SETTINGS_ATTR[key], default))
+            else:
+                value = default
+            action = self._layer_actions.get(key)
+            if action is not None:
+                with QSignalBlocker(action):
+                    action.setChecked(value)
         self.chart.set_show_zscore(bool(show_z))
+        self._apply_layers()
         self._apply_filters()
         self._update_live_availability()
         with QSignalBlocker(self._live_cb):
@@ -418,9 +556,40 @@ class OIRegimePage(QWidget):
             return
         self._save_toolbar_state()
 
+    def _show_layers_menu(self) -> None:
+        self._layers_menu.exec(
+            self._layers_btn.mapToGlobal(self._layers_btn.rect().bottomLeft())
+        )
+
+    def _on_layer_toggled(self, _key: str, _checked: bool) -> None:
+        self._apply_layers()
+        if self._updating:
+            return
+        self._save_toolbar_state()
+
+    def _apply_layers(self) -> None:
+        flags = {
+            key: bool(action.isChecked()) for key, action in self._layer_actions.items()
+        }
+        self.chart.set_overlays(
+            show_multi_bar=flags.get("multi_bar", False),
+            show_trap_levels=flags.get("trap_levels", False),
+            show_spot_z=flags.get("spot_z", False),
+            show_standalone_absorption=flags.get("standalone", False),
+        )
+
+    def _show_stats(self) -> None:
+        if self._stats_dialog is None:
+            self._stats_dialog = OutcomeStatsDialog(self)
+        stats = self._bundle.outcome_stats if self._bundle is not None else None
+        self._stats_dialog.set_stats(stats)
+        self._stats_dialog.show()
+        self._stats_dialog.raise_()
+        self._stats_dialog.activateWindow()
+
     def _toolbar_state_payload(self) -> dict[str, object]:
         """Актуальное состояние тулбара в формате ключей config.json."""
-        return {
+        payload: dict[str, object] = {
             "OI_DEFAULT_TIMEFRAME": self._tf,
             "OI_THRESHOLD_OI": round(float(self._toi_spin.value()), 2),
             "OI_THRESHOLD_DELTA": round(float(self._tdelta_spin.value()), 2),
@@ -430,6 +599,14 @@ class OIRegimePage(QWidget):
             "OI_SHOW_Z_SUBPLOT": self._z_cb.isChecked(),
             "OI_LIVE_ENABLED": self._live_cb.isChecked(),
         }
+        for key, (config_key, _label) in _LAYER_DEFAULTS.items():
+            action = self._layer_actions.get(key)
+            payload[config_key] = (
+                bool(action.isChecked())
+                if action is not None
+                else bool(DEFAULT_CONFIG[config_key])
+            )
+        return payload
 
     def _save_toolbar_state(self) -> None:
         """Тихо сохраняет состояние тулбара в config.json (без toast и спама в логах)."""
@@ -467,6 +644,12 @@ class OIRegimePage(QWidget):
             with QSignalBlocker(self._z_cb):
                 self._z_cb.setChecked(bool(DEFAULT_CONFIG["OI_SHOW_Z_SUBPLOT"]))
             self.chart.set_show_zscore(self._z_cb.isChecked())
+            for key, (config_key, _label) in _LAYER_DEFAULTS.items():
+                action = self._layer_actions.get(key)
+                if action is not None:
+                    with QSignalBlocker(action):
+                        action.setChecked(bool(DEFAULT_CONFIG[config_key]))
+            self._apply_layers()
             self._update_preset_state()
             self._update_live_availability()
             with QSignalBlocker(self._live_cb):
@@ -509,6 +692,8 @@ class OIRegimePage(QWidget):
         self.chart.set_bundle(bundle, reset_view=old_key != new_key or old_key is None)
         self.feed.set_tz_offset(bundle.params.tz_offset_hours)
         self._apply_filters()
+        if self._stats_dialog is not None and self._stats_dialog.isVisible():
+            self._stats_dialog.set_stats(bundle.outcome_stats)
         self._set_status(
             f"{bundle.sources_label} · {bundle.updated_at}",
             "warn" if bundle.warnings else "ok",
