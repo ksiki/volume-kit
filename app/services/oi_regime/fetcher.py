@@ -365,7 +365,11 @@ class OIRegimeFetcher:
     def _fetch_funding_history(
         self, symbol: str, start_ms: int, end_ms: int
     ) -> pd.Series:
-        """История ставки финансирования Binance Futures (последняя ставка на свечу)."""
+        """История ставки финансирования Binance Futures в процентах (последняя ставка на свечу).
+
+        Binance отдаёт ``fundingRate`` десятичной дробью (0.0001 = 0.01%), поэтому
+        значение переводится в проценты сразу при парсинге.
+        """
         payload = self._get_json(
             f"{BINANCE_FAPI}/fapi/v1/fundingRate",
             {
@@ -380,7 +384,7 @@ class OIRegimeFetcher:
         collected: dict[int, float] = {}
         for item in payload:
             try:
-                collected[int(item["fundingTime"])] = float(item["fundingRate"])
+                collected[int(item["fundingTime"])] = float(item["fundingRate"]) * 100.0
             except (KeyError, TypeError, ValueError):
                 continue
         if not collected:
@@ -388,7 +392,10 @@ class OIRegimeFetcher:
         return pd.Series(collected, dtype=np.float64).sort_index()
 
     def _fetch_premium_index(self, symbol: str) -> tuple[float | None, float | None]:
-        """Текущий базис (%) и ставка финансирования из premiumIndex."""
+        """Текущий базис (%) и ставка финансирования (%) из premiumIndex.
+
+        ``lastFundingRate`` приходит десятичной дробью и переводится в проценты здесь же.
+        """
         payload = self._get_json(f"{BINANCE_FAPI}/fapi/v1/premiumIndex", {"symbol": symbol})
         if not isinstance(payload, dict):
             return None, None
@@ -397,7 +404,11 @@ class OIRegimeFetcher:
         index_price = payload.get("indexPrice")
         if _finite(mark) and _finite(index_price) and float(index_price) > 0:
             basis_pct = (float(mark) - float(index_price)) / float(index_price) * 100.0
-        funding = float(payload["lastFundingRate"]) if _finite(payload.get("lastFundingRate")) else None
+        funding = (
+            float(payload["lastFundingRate"]) * 100.0
+            if _finite(payload.get("lastFundingRate"))
+            else None
+        )
         return basis_pct, funding
 
 

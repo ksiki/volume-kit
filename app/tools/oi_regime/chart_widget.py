@@ -45,8 +45,6 @@ STANDALONE_COLOR = "#B45309"
 SUPPORT_COLOR = "#059669"
 RESISTANCE_COLOR = "#DC2626"
 MULTI_RIBBON_HEIGHT = 22.0
-MULTI_RIBBON_FULL_LABEL_MIN = 52.0
-MULTI_RIBBON_COMPACT_LABEL_MIN = 34.0
 
 Z_Y_MAX_FLOOR = 4.5
 Z_Y_MAX_CEIL = 6.0
@@ -718,14 +716,22 @@ class OIRegimeChart(QWidget):
         painter.setPen(QPen(QColor(PALETTE["border"]), 1))
         painter.drawLine(rect.bottomLeft(), rect.bottomRight())
 
-        painter.setFont(QFont(FONT_FAMILY_UI, 8))
+        # Подпись дорожки — в правой колонке оси, чтобы не наезжать на плашки зон.
+        painter.setFont(QFont(FONT_FAMILY_MONO, 7))
         painter.setPen(QColor(PALETTE["text_muted"]))
         painter.drawText(
-            QRectF(rect.left() + 6, rect.top(), 90, rect.height()),
+            QRectF(
+                rect.right() + 6,
+                rect.top(),
+                max(30.0, self.width() - rect.right() - 8.0),
+                rect.height(),
+            ),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            "Мульти-бар",
+            "М-бар",
         )
 
+        painter.save()
+        painter.setClipRect(rect)
         for zone in self._visible_zones(first, last):
             span = self._zone_span(zone, rect, first, last)
             if span is None:
@@ -768,26 +774,44 @@ class OIRegimeChart(QWidget):
                 QPointF(plaque.right(), plaque.bottom() - 2),
             )
 
+            # Подпись подбирается по фактической ширине видимой части плашки.
+            vis_left = max(plaque.left(), rect.left())
+            vis_right = min(plaque.right(), rect.right())
+            vis_width = max(0.0, vis_right - vis_left)
             label = ""
-            if width >= MULTI_RIBBON_FULL_LABEL_MIN:
-                label = f"{multi_zone_short(zone.regime_key)} · {zone.bar_count}б"
-            elif width >= MULTI_RIBBON_COMPACT_LABEL_MIN:
-                compact = REGIME_SHORT.get(zone.regime_key, "")
-                if compact:
-                    label = f"{compact} ×{zone.bar_count}"
+            label_font = QFont(FONT_FAMILY_MONO, 8, QFont.Weight.Bold)
+            if vis_width > 0:
+                full_label = f"{multi_zone_short(zone.regime_key)} · {zone.bar_count}б"
+                medium = REGIME_SHORT.get(zone.regime_key, "")
+                medium_label = f"{medium} ×{zone.bar_count}" if medium else ""
+                compact_label = regime_compact_text(zone.regime_key)
+                if QFontMetrics(label_font).horizontalAdvance(full_label) <= vis_width - 8.0:
+                    label = full_label
+                else:
+                    label_font = QFont(FONT_FAMILY_MONO, 7, QFont.Weight.Bold)
+                    compact_metrics = QFontMetrics(label_font)
+                    if (
+                        medium_label
+                        and compact_metrics.horizontalAdvance(medium_label) <= vis_width - 8.0
+                    ):
+                        label = medium_label
+                    elif compact_label:
+                        compact_width = compact_metrics.horizontalAdvance(compact_label)
+                        if compact_width <= vis_width - 8.0:
+                            label = compact_label
+                        elif compact_width <= vis_width - 6.0:
+                            label = compact_label
             if label:
                 text_color = QColor(zone.color)
                 text_color.setAlpha(255)
-                font_size = 7 if width < MULTI_RIBBON_FULL_LABEL_MIN else 8
-                painter.setFont(
-                    QFont(FONT_FAMILY_MONO, font_size, QFont.Weight.Bold)
-                )
+                painter.setFont(label_font)
                 painter.setPen(text_color)
                 painter.drawText(
-                    plaque.adjusted(3, 0, -3, 0),
+                    QRectF(vis_left, plaque.top(), vis_width, plaque.height()),
                     Qt.AlignmentFlag.AlignCenter,
                     label,
                 )
+        painter.restore()
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
     def _draw_selection(
@@ -908,15 +932,23 @@ class OIRegimeChart(QWidget):
 
         if last >= first and self._bars[last].is_live:
             bar = self._bars[last]
-            x = self._x_for_index(last, rect)
             painter.setFont(QFont(FONT_FAMILY_MONO, 8, QFont.Weight.Bold))
-            painter.setPen(QColor(PALETTE["text"]))
             progress = max(0, min(100, int(round(bar.live_progress * 100.0))))
-            painter.drawText(
-                QRectF(x - 24, rect.top() + 2, 70, 14),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                f"LIVE {progress}%",
-            )
+            live_text = f"LIVE {progress}%"
+            text_w = float(QFontMetrics(painter.font()).horizontalAdvance(live_text))
+            pad_x = 4.0
+            badge_w = text_w + pad_x * 2.0
+            badge_h = 14.0
+            badge_x = max(rect.left() + 4.0, rect.right() - badge_w - 6.0)
+            badge = QRectF(badge_x, rect.top() + 3.0, badge_w, badge_h)
+            backdrop = QColor(PALETTE["surface"])
+            backdrop.setAlpha(210)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(backdrop)
+            painter.drawRoundedRect(badge, 3, 3)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QColor(PALETTE["text"]))
+            painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, live_text)
 
 
     def _draw_markers(
