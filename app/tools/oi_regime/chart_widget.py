@@ -54,6 +54,7 @@ Z_BAR_LOW_NEGATIVE = "#93C5FD"
 Z_BAR_HIGH_POSITIVE = "#059669"
 Z_BAR_HIGH_NEGATIVE = "#DC2626"
 Z_BAR_SPOT = "#D97706"
+Z_THRESHOLD_COLOR = "#94A3B8"
 
 
 def _fmt_num(value: float | None, digits: int = 2, signed: bool = True) -> str:
@@ -1137,7 +1138,7 @@ class OIRegimeChart(QWidget):
 
             upper_y = zero_y - (threshold / y_max) * half
             lower_y = zero_y + (threshold / y_max) * half
-            painter.setPen(QPen(QColor("#94A3B8"), 1, Qt.PenStyle.DashLine))
+            painter.setPen(QPen(QColor(Z_THRESHOLD_COLOR), 1, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(track.left(), upper_y), QPointF(track.right(), upper_y))
             painter.drawLine(QPointF(track.left(), lower_y), QPointF(track.right(), lower_y))
 
@@ -1221,7 +1222,7 @@ class OIRegimeChart(QWidget):
         bar = self._bars[self._hover_index]
         x = self._x_for_index(self._hover_index, price_rect)
         bottom = z_rect.bottom() if z_rect is not None else price_rect.bottom()
-        painter.setPen(QPen(QColor("#94A3B8"), 1, Qt.PenStyle.DashLine))
+        painter.setPen(QPen(QColor(Z_THRESHOLD_COLOR), 1, Qt.PenStyle.DashLine))
         painter.drawLine(QPointF(x, price_rect.top()), QPointF(x, bottom))
 
         y = self._hover_pos.y()

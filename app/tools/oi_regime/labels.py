@@ -49,6 +49,21 @@ MULTI_ZONE_SHORT: dict[str, str] = {
     "SHORT_CLOSE": "Сброс Ш",
 }
 
+# Пресеты чувствительности: (ключ, подпись, порог OI, порог дельты).
+SENSITIVITY_PRESETS: tuple[tuple[str, str, float, float], ...] = (
+    ("strict", "Строгий", 2.5, 2.0),
+    ("standard", "Стандарт", 2.0, 1.5),
+    ("sensitive", "Чуткий", 1.5, 1.2),
+)
+
+# Дополнительные слои графика: ключ -> (ключ config.json, подпись в меню).
+LAYER_OPTIONS: dict[str, tuple[str, str]] = {
+    "multi_bar": ("OI_SHOW_MULTI_BAR", "Мульти-бар режимы"),
+    "trap_levels": ("OI_SHOW_TRAP_LEVELS", "Уровни ловушек"),
+    "standalone": ("OI_SHOW_STANDALONE_ABSORPTION", "Поглощения без OI"),
+    "spot_z": ("OI_SHOW_SPOT_Z", "Спот на Z-графике"),
+}
+
 
 def short_regime_label(regime_key: str | None, fallback: str | None = "") -> str:
     """Короткая подпись режима по ключу (fallback — исходный текст)."""

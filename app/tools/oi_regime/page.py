@@ -37,18 +37,16 @@ from app.services.oi_regime.models import (
 )
 from app.tools.oi_regime.chart_widget import OIRegimeChart
 from app.tools.oi_regime.feed_widget import AnomalyFeed
+from app.tools.oi_regime.labels import (
+    LAYER_OPTIONS as _LAYER_DEFAULTS,
+    SENSITIVITY_PRESETS as _PRESETS,
+)
+from app.tools.oi_regime.legend_dialog import OIRegimeLegendDialog
 from app.ui.widgets import repolish
 
 log = logging.getLogger(__name__)
 
 SAVE_DEBOUNCE_MS = 300
-
-_LAYER_DEFAULTS = {
-    "multi_bar": ("OI_SHOW_MULTI_BAR", "Мульти-бар режимы"),
-    "trap_levels": ("OI_SHOW_TRAP_LEVELS", "Уровни ловушек"),
-    "standalone": ("OI_SHOW_STANDALONE_ABSORPTION", "Поглощения без OI"),
-    "spot_z": ("OI_SHOW_SPOT_Z", "Спот на Z-графике"),
-}
 
 _OUTCOME_COLUMNS = ("3 бар", "6 бар", "12 бар")
 
@@ -136,11 +134,6 @@ def _fmt_pct(value: float | None) -> str:
     return f"{value:+.2f}%"
 
 
-_PRESETS: tuple[tuple[str, str, float, float], ...] = (
-    ("strict", "Строгий", 2.5, 2.0),
-    ("standard", "Стандарт", 2.0, 1.5),
-    ("sensitive", "Чуткий", 1.5, 1.2),
-)
 _TIMEFRAMES = ("5m", "15m", "1h", "4h")
 
 
@@ -171,6 +164,7 @@ class OIRegimePage(QWidget):
         self._tf = params.timeframe
         self._layer_actions: dict[str, QAction] = {}
         self._stats_dialog: OutcomeStatsDialog | None = None
+        self._legend_dialog: OIRegimeLegendDialog | None = None
         self._params_timer = QTimer(self)
         self._params_timer.setSingleShot(True)
         self._params_timer.setInterval(110)
@@ -345,11 +339,21 @@ class OIRegimePage(QWidget):
         self._stats_btn.setToolTip("Статистика отработки по типам режимов")
         self._stats_btn.clicked.connect(self._show_stats)
 
+        self._legend_btn = QPushButton("? Легенда")
+        self._legend_btn.setObjectName("SecondaryBtn")
+        self._legend_btn.setFixedHeight(26)
+        self._legend_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._legend_btn.setToolTip(
+            "Справочник всех обозначений, слоёв и метрик инструмента"
+        )
+        self._legend_btn.clicked.connect(self._show_legend)
+
         row2.addWidget(self._abs_cb)
         row2.addWidget(self._weak_cb)
         row2.addWidget(self._z_cb)
         row2.addWidget(self._layers_btn)
         row2.addWidget(self._stats_btn)
+        row2.addWidget(self._legend_btn)
         row2.addStretch(1)
 
         self._toi_spin = QDoubleSpinBox()
@@ -586,6 +590,14 @@ class OIRegimePage(QWidget):
         self._stats_dialog.show()
         self._stats_dialog.raise_()
         self._stats_dialog.activateWindow()
+
+    def _show_legend(self) -> None:
+        """Открывает немодальный справочник обозначений, не блокируя график."""
+        if self._legend_dialog is None:
+            self._legend_dialog = OIRegimeLegendDialog(self)
+        self._legend_dialog.show()
+        self._legend_dialog.raise_()
+        self._legend_dialog.activateWindow()
 
     def _toolbar_state_payload(self) -> dict[str, object]:
         """Актуальное состояние тулбара в формате ключей config.json."""
