@@ -47,6 +47,57 @@ def prepare_combo_box(combo: QComboBox, max_visible_items: int = 10) -> None:
     combo.setMaxVisibleItems(max_visible_items)
 
 
+class ProxyPillButton(QPushButton):
+    """Компактная пилюля статуса прокси в топбаре."""
+
+    right_clicked = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__("", parent)
+        self.setObjectName("ProxyPill")
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setFixedHeight(32)
+        self.setMinimumWidth(124)
+
+        self._state = "off"
+        self._dot = QFrame(self)
+        self._dot.setObjectName("ProxyStatusDot")
+        self._dot.setFixedSize(8, 8)
+        self._dot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        self._text_label = QLabel("Прокси: Выкл", self)
+        self._text_label.setObjectName("ProxyPillText")
+        self._text_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 11, 0)
+        layout.setSpacing(7)
+        layout.addWidget(self._dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self._text_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._apply_state("off")
+
+    def _apply_state(self, state: str) -> None:
+        self._state = state
+        self.setProperty("state", state)
+        self._dot.setProperty("state", state)
+        repolish(self)
+        repolish(self._dot)
+
+    def set_status(self, text: str, state: str = "off", tooltip: str = "") -> None:
+        self._text_label.setText(text)
+        if state != self._state:
+            self._apply_state(state)
+        self.setToolTip(tooltip)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.RightButton:
+            self.right_clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 class ExchangeDot(QFrame):
     """Цветной индикатор типа площадки (Spot / Futures)."""
 

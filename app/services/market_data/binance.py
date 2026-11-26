@@ -1,12 +1,13 @@
 """HTTP-клиент Binance Spot: тик-сайз и загрузка свечей."""
 
-import requests
 import numpy as np
+
+from app.core.http_client import http_request
 
 
 def get_binance_spot_tick_size(symbol: str) -> float:
     url = f"https://api.binance.com/api/v3/exchangeInfo?symbol={symbol}"
-    resp = requests.get(url, timeout=15)
+    resp = http_request("GET", url, timeout=15)
     resp.raise_for_status()
     for f in resp.json()["symbols"][0]["filters"]:
         if f["filterType"] == "PRICE_FILTER":
@@ -36,7 +37,7 @@ def _fetch_binance_spot_klines(
         if end_time is not None:
             params["endTime"] = end_time
 
-        resp = requests.get(url, params=params, timeout=15)
+        resp = http_request("GET", url, params=params, timeout=15)
         resp.raise_for_status()
         raw = resp.json()
         if not raw:

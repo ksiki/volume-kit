@@ -1,5 +1,6 @@
 """Единая точка запуска GUI Volume Kit."""
 
+import logging
 import os
 import sys
 
@@ -21,6 +22,7 @@ from app.core.logging_setup import configure_logging
 from app.core.paths import icon_path
 from app.tools import register_builtin_tools
 from app.ui.main_window import MainWindow
+from app.ui.proxy_web import apply_qt_proxy_from_manager
 from app.ui.theme import APP_STYLESHEET, FONT_FAMILY_UI
 
 
@@ -83,6 +85,10 @@ def start_gui() -> None:
     app.setFont(base_font)
 
     app.setStyleSheet(APP_STYLESHEET)
+
+    proxy_warning = apply_qt_proxy_from_manager()
+    if proxy_warning:
+        logging.getLogger(__name__).warning("Прокси для Web-вкладок: %s", proxy_warning)
 
     registry = register_builtin_tools()
     window = MainWindow(registry, get_config_service())

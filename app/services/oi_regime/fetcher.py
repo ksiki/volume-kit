@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 import requests
 
+from app.core.http_client import ProxyNotConfiguredError, create_http_session
+from app.core.proxy import sanitize_error
 from app.services.oi_regime.models import RegimeParams
 
 log = logging.getLogger(__name__)
@@ -215,7 +217,7 @@ class OIRegimeFetcher:
     def _session_for_thread(self) -> requests.Session:
         session = getattr(self._local, "session", None)
         if session is None:
-            session = requests.Session()
+            session = create_http_session()
             session.headers.update({"User-Agent": "VolumeKit/1.0 (+oi-regime)"})
             self._local.session = session
             with self._sessions_lock:
@@ -252,12 +254,14 @@ class OIRegimeFetcher:
                     )
                 response.raise_for_status()
                 return response.json()
+            except ProxyNotConfiguredError:
+                raise
             except (requests.RequestException, ValueError) as exc:
                 last_error = exc
                 if attempt < 2:
                     time.sleep(0.35 * (2**attempt))
                     self._check_cancel()
-        raise RegimeFetchError(f"Не удалось получить {url}: {last_error}")
+        raise RegimeFetchError(f"Не удалось получить {url}: {sanitize_error(last_error)}")
 
 
     # ==================== KLINES ====================

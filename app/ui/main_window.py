@@ -1,9 +1,11 @@
 """Главное окно Volume Kit: оболочка, навигация и сервисы для инструментов."""
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from contextlib import suppress
+from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QKeyEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -21,10 +23,19 @@ from PySide6.QtWidgets import (
 
 from app.core.config import ConfigService, get_config_service
 from app.core.paths import logo_path
+from app.core.proxy import get_proxy_manager
 from app.core.tools import BaseTool, CommandBus, ToolContext, ToolRegistry
 from app.ui.log_bridge import QtLogBridge, install_qt_logging
 from app.ui.logs_panel import LogsPanel
-from app.ui.widgets import ExchangeDot, LogoMark, ToastNotification, repolish
+from app.ui.proxy_dialog import ProxyDialog
+from app.ui.proxy_web import apply_qt_proxy_from_manager
+from app.ui.widgets import (
+    ExchangeDot,
+    LogoMark,
+    ProxyPillButton,
+    ToastNotification,
+    repolish,
+)
 from app.ui.workers.spot_price_poller import SpotPricePoller
 
 SPOT_PRICE_REFRESH_SEC = 2.0
@@ -48,6 +59,8 @@ def _format_price(val: Any) -> str:
 class MainWindow(QMainWindow):
     """Главное окно приложения Volume Kit."""
 
+    proxy_state_changed = Signal()
+
     def __init__(self, registry: ToolRegistry, config: ConfigService | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Volume Kit")
@@ -66,6 +79,9 @@ class MainWindow(QMainWindow):
         self._current_tool_id: str = ""
         self._current_symbol: str = str(self._config.current.symbol).strip().upper()
         self._last_spot_price: float | None = None
+        self._proxy_manager = get_proxy_manager()
+        self._proxy_unsubscribe = None
+        self._proxy_web_warning: str | None = None
 
         self._price_flash_timer = QTimer(self)
         self._price_flash_timer.setSingleShot(True)
@@ -240,11 +256,15 @@ class MainWindow(QMainWindow):
         self._logs_btn.setFixedHeight(32)
         self._logs_btn.setToolTip("Показать или скрыть панель логов (горячая клавиша L)")
 
+        self._proxy_btn = ProxyPillButton()
+        self._proxy_btn.setToolTip("Левая кнопка — настройки прокси, правая — быстрое вкл/выкл")
+
         lay.addWidget(self._page_title_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addSpacing(4)
         lay.addWidget(self._symbol_pill, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addWidget(self._spot_price_pill, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addStretch(1)
+        lay.addWidget(self._proxy_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addWidget(self._logs_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         return topbar
@@ -260,6 +280,17 @@ class MainWindow(QMainWindow):
         self._price_poller.price_updated.connect(self._on_spot_price_updated)
 
         self._logs_btn.clicked.connect(self._toggle_logs_panel)
+
+        self._proxy_btn.clicked.connect(self._open_proxy_dialog)
+        self._proxy_btn.right_clicked.connect(self._toggle_proxy)
+        self.proxy_state_changed.connect(
+            self._on_proxy_state_changed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._proxy_unsubscribe = self._proxy_manager.subscribe(
+            self.proxy_state_changed.emit
+        )
+        self._on_proxy_state_changed()
 
         self._logs_panel.close_requested.connect(self._logs_panel.hide)
         self._logs_panel.copied.connect(self.show_toast)
@@ -294,6 +325,82 @@ class MainWindow(QMainWindow):
             self._logs_panel.hide()
         else:
             self._logs_panel.show()
+
+    # ==================== ПРОКСИ ====================
+
+    def _on_proxy_state_changed(self) -> None:
+        self._proxy_web_warning = apply_qt_proxy_from_manager()
+        self._refresh_proxy_pill()
+
+    def _refresh_proxy_pill(self) -> None:
+        config = self._proxy_manager.snapshot()
+        enabled_count = sum(1 for entry in config.proxies if entry.enabled)
+        active = self._proxy_manager.get_active_proxy()
+        warning = self._proxy_web_warning
+
+        tooltip_lines: list[str] = []
+        if not config.enabled:
+            text, state = "Прокси: Выкл", "off"
+            tooltip_lines.append("Прокси выключен — прямое соединение")
+        elif config.random_mode:
+            if enabled_count == 0:
+                text, state = "Прокси: Нет активных", "empty"
+                tooltip_lines.append("Случайный режим включён, но нет прокси с отметкой «Вкл»")
+            else:
+                text, state = f"Прокси: Авто ({enabled_count})", "auto"
+                tooltip_lines.append(
+                    f"Случайный прокси из {enabled_count} активных; удалённый DNS: "
+                    f"{'да' if config.remote_dns else 'нет'}"
+                )
+        elif active is None:
+            text, state = "Прокси: Нет активных", "empty"
+            tooltip_lines.append("Прокси включён, но активный прокси не выбран")
+        else:
+            text, state = f"Прокси: {active.display_name()}", "on"
+            tooltip_lines.append(f"Активный: {active.masked_url(config.remote_dns)}")
+            tooltip_lines.append(f"Удалённый DNS: {'да' if config.remote_dns else 'нет'}")
+
+        if config.apply_to_web and warning:
+            tooltip_lines.append(warning)
+        tooltip_lines.append("ЛКМ — настройки, ПКМ — быстрое вкл/выкл")
+        self._proxy_btn.set_status(text, state, "\n".join(tooltip_lines))
+
+    def _toggle_proxy(self) -> None:
+        config = self._proxy_manager.snapshot()
+        if config.enabled:
+            self._proxy_manager.set_enabled(False)
+            self.show_toast("Прокси выключен")
+            return
+
+        entries = self._proxy_manager.entries()
+        if not entries:
+            self.show_toast("Список прокси пуст — добавьте прокси")
+            self._open_proxy_dialog()
+            return
+
+        if config.random_mode:
+            if not any(entry.enabled for entry in entries):
+                self.show_toast("Нет прокси с отметкой «Вкл»")
+                self._open_proxy_dialog()
+                return
+        elif self._proxy_manager.get_active_proxy() is None:
+            self.show_toast("Активный прокси не выбран")
+            self._open_proxy_dialog()
+            return
+
+        self._proxy_manager.set_enabled(True)
+        picked = self._proxy_manager.pick_proxy()
+        if picked is not None:
+            self.show_toast(f"Прокси включён: {picked.display_name()}")
+        else:
+            self.show_toast("Прокси включён, но нет активных прокси")
+
+    def _open_proxy_dialog(self) -> None:
+        dialog = ProxyDialog(self._proxy_manager, self)
+        dialog.toast_requested.connect(self.show_toast)
+        dialog.exec()
+        dialog.deleteLater()
+        self._on_proxy_state_changed()
 
     # ==================== ToolHost: СЕРВИСЫ ДЛЯ ИНСТРУМЕНТОВ ====================
 
@@ -397,6 +504,10 @@ class MainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._proxy_unsubscribe is not None:
+            with suppress(Exception):
+                self._proxy_unsubscribe()
+            self._proxy_unsubscribe = None
         logging.getLogger().removeHandler(self._log_handler)
         if self._price_poller.isRunning():
             self._price_poller.stop()

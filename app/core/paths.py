@@ -13,6 +13,7 @@ else:
     BASE_DIR = Path(__file__).resolve().parents[1]
 
 CONFIG_PATH = BASE_DIR / "config.json"
+PROXIES_PATH = BASE_DIR / "proxies.json"
 CACHE_DIR = BASE_DIR / "data_cache"
 OUTPUT_DIR = BASE_DIR / "output"
 WEB_PROFILE_DIR = BASE_DIR / "web_profile"

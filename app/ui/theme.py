@@ -219,6 +219,98 @@ QLabel#RefPriceChip {{
     color: {PALETTE["text_secondary"]};
 }}
 
+QPushButton#ProxyPill {{
+    background-color: {PALETTE["surface_alt"]};
+    border: 1px solid {PALETTE["border"]};
+    border-radius: 7px;
+    padding: 0 10px;
+    text-align: left;
+    min-height: 20px;
+}}
+QPushButton#ProxyPill:hover {{
+    background-color: {PALETTE["surface_hover"]};
+    border-color: {PALETTE["border_strong"]};
+}}
+QLabel#ProxyPillText {{
+    background-color: transparent;
+    color: {PALETTE["text_secondary"]};
+    font-size: 12.5px;
+    font-weight: 600;
+}}
+QFrame#ProxyStatusDot {{
+    border: none;
+    border-radius: 4px;
+    background-color: #94A3B8;
+}}
+QFrame#ProxyStatusDot[state="on"] {{
+    background-color: {PALETTE["ok"]};
+}}
+QFrame#ProxyStatusDot[state="auto"] {{
+    background-color: {PALETTE["accent"]};
+}}
+QFrame#ProxyStatusDot[state="empty"] {{
+    background-color: {PALETTE["warn"]};
+}}
+
+QDialog#ProxyDialog {{
+    background-color: {PALETTE["bg"]};
+}}
+QLabel#ProxyWarning {{
+    background-color: #FFFBEB;
+    border: 1px solid #FDE68A;
+    border-radius: 7px;
+    color: #B45309;
+    font-size: 12px;
+    padding: 7px 10px;
+}}
+QLabel#ProxyAddress {{
+    background-color: transparent;
+    color: {PALETTE["text"]};
+    font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
+    font-size: 12px;
+    font-weight: 600;
+}}
+QLabel#AuthBadge {{
+    background-color: {PALETTE["accent_soft"]};
+    border: 1px solid {PALETTE["accent_border"]};
+    border-radius: 5px;
+    color: {PALETTE["accent_hover"]};
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 5px;
+}}
+QPlainTextEdit#ProxyBulkInput {{
+    background-color: #FFFFFF;
+    color: {PALETTE["text"]};
+    border: 1px solid {PALETTE["border_strong"]};
+    border-radius: 7px;
+    font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
+    font-size: 12px;
+    padding: 6px;
+}}
+QRadioButton {{
+    spacing: 6px;
+    color: {PALETTE["text"]};
+}}
+QRadioButton::indicator {{
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    border: 1px solid {PALETTE["border_strong"]};
+    background-color: #FFFFFF;
+}}
+QRadioButton::indicator:hover {{
+    border-color: {PALETTE["accent"]};
+}}
+QRadioButton::indicator:checked {{
+    background-color: {PALETTE["accent"]};
+    border-color: {PALETTE["accent"]};
+}}
+QRadioButton::indicator:disabled {{
+    background-color: {PALETTE["surface_alt"]};
+    border-color: {PALETTE["border"]};
+}}
+
 QFrame#CalibControls {{
     background-color: #FFFFFF;
     border: 1px solid {PALETTE["border"]};

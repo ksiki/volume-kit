@@ -12,6 +12,9 @@ import numpy as np
 import pandas as pd
 import requests
 
+from app.core.http_client import ProxyNotConfiguredError, create_http_session
+from app.core.proxy import sanitize_error
+
 log = logging.getLogger(__name__)
 
 
@@ -20,7 +23,9 @@ _thread_local = threading.local()
 
 def _get_session() -> requests.Session:
     if not hasattr(_thread_local, "session"):
-        _thread_local.session = requests.Session()
+        session = create_http_session()
+        session.headers.update({"User-Agent": "VolumeKit/1.0 (storage)"})
+        _thread_local.session = session
     return _thread_local.session
 
 
@@ -33,11 +38,15 @@ def _download_with_retries(url: str, retries: int = 3) -> bytes | None:
                 return None
             resp.raise_for_status()
             return resp.content
+        except ProxyNotConfiguredError:
+            raise
         except requests.RequestException as exc:
             if attempt == retries:
                 raise
             wait = 2 * attempt
-            log.warning(f"Ошибка сети ({exc}), повтор {attempt}/{retries} через {wait}с: {url}")
+            log.warning(
+                f"Ошибка сети ({sanitize_error(exc)}), повтор {attempt}/{retries} через {wait}с: {url}"
+            )
             time.sleep(wait)
     return None
 

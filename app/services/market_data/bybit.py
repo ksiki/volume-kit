@@ -1,12 +1,13 @@
 """HTTP-клиент ByBit Futures: тик-сайз и загрузка свечей."""
 
-import requests
 import numpy as np
+
+from app.core.http_client import http_request
 
 
 def get_bybit_futures_tick_size(symbol: str) -> float:
     url = "https://api.bybit.com/v5/market/instruments-info"
-    resp = requests.get(url, params={"category": "linear", "symbol": symbol}, timeout=15)
+    resp = http_request("GET", url, params={"category": "linear", "symbol": symbol}, timeout=15)
     resp.raise_for_status()
     payload = resp.json()
     if payload.get("retCode") != 0:
@@ -37,7 +38,7 @@ def _fetch_bybit_futures_klines(
         if end_time is not None:
             params["end"] = end_time
 
-        resp = requests.get(url, params=params, timeout=15)
+        resp = http_request("GET", url, params=params, timeout=15)
         resp.raise_for_status()
         payload = resp.json()
         if payload.get("retCode") != 0:
