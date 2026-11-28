@@ -136,7 +136,15 @@ class OIRegimeTool(BaseTool):
                 logger_name="app.services.oi_regime.fetcher",
             )
 
-        page.set_loading("Загрузка...")
+        # Плашку ATR(14) сбрасываем только при первой загрузке или смене
+        # символа/таймфрейма: фоновый Live не должен «мигать» на «—».
+        current = self._bundle
+        same_view = (
+            current is not None
+            and current.symbol == symbol.strip().upper()
+            and current.timeframe == params.timeframe
+        )
+        page.set_loading("Загрузка...", reset_atr=not same_view)
         worker = OIRegimeWorker(
             symbol=symbol,
             params=params,

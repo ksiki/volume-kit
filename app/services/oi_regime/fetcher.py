@@ -1492,11 +1492,22 @@ def align_raw(
     delta_columns["binance"] = delta_bin
 
     for ex, grid_ex in secondary_grids.items():
-        ex_start = grid_ex.reindex(open_times)
-        ex_end = grid_ex.reindex(open_times + step_ms)
+        # Значения снимаем позиционно: reindex(open_times) и reindex(open_times + step_ms)
+        # возвращают разные индексы, и разность Series выравнивалась бы по меткам
+        # (t+step первой серии совпадает с t второй), обнуляя ΔOI на каждом баре.
+        ex_start = pd.Series(
+            grid_ex.reindex(open_times).to_numpy(dtype=np.float64),
+            index=open_times,
+            dtype=np.float64,
+        )
+        ex_end = pd.Series(
+            grid_ex.reindex(open_times + step_ms).to_numpy(dtype=np.float64),
+            index=open_times,
+            dtype=np.float64,
+        )
         delta_columns[ex] = (ex_end - ex_start).astype(np.float64)
-        oi_start_columns[ex] = ex_start.astype(np.float64)
-        oi_end_columns[ex] = ex_end.astype(np.float64)
+        oi_start_columns[ex] = ex_start
+        oi_end_columns[ex] = ex_end
 
     # Сумма ΔOI по всем непустым валидным биржам на каждом баре.
     # Набор бирж в числителе определяется ровно непустыми delta_oi_<ex>;
@@ -1504,7 +1515,10 @@ def align_raw(
     if open_times.size:
         total = delta_columns["binance"].copy()
         for ex in secondary_grids:
-            total = total.add(delta_columns[ex], fill_value=0.0)
+            # Биржа без дельты на конкретном баре не должна обнулять сумму:
+            # engine в _oi_total_start считает её вклад нулевым по тому же признаку.
+            contribution = delta_columns[ex].where(delta_columns[ex].notna(), 0.0)
+            total = total.add(contribution, fill_value=0.0)
         total = total.where(delta_columns["binance"].notna())
     else:
         total = pd.Series(dtype=np.float64)

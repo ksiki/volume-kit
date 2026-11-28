@@ -765,10 +765,16 @@ class OIRegimePage(QWidget):
         )
         self._refresh_btn.setEnabled(True)
 
-    def set_loading(self, stage: str = "Загрузка...") -> None:
+    def set_loading(self, stage: str = "Загрузка...", *, reset_atr: bool = True) -> None:
+        """Переводит страницу в состояние загрузки.
+
+        ``reset_atr=False`` используется для тихого (фонового) Live-обновления: уже
+        показанный ATR(14) не мигает на «—», пока не придёт новый отчёт.
+        """
         self.set_status_text(stage, "loading")
         self._refresh_btn.setEnabled(False)
-        self._update_atr_badge(None)
+        if reset_atr:
+            self._update_atr_badge(None)
 
     def _update_atr_badge(self, bundle: RegimeBundle | None) -> None:
         """Компактная плашка текущего Wilder ATR(14) во второй строке тулбара."""
