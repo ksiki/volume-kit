@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QListView,
     QPushButton,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -112,7 +111,7 @@ class ExchangeDot(QFrame):
 
 
 class TfBadge(QLabel):
-    """Цветной бейдж таймфрейма (1h, 15m, 5m)."""
+    """Цветной бейдж таймфрейма (4h, 1h, 15m, 5m)."""
 
     def __init__(
         self,
@@ -126,7 +125,7 @@ class TfBadge(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         normalized = (tf_key or text).strip().lower()
-        if normalized in ("1h", "15m", "5m"):
+        if normalized in ("4h", "1h", "15m", "5m"):
             self.setProperty("tf", normalized)
         else:
             self.setProperty("tf", "other")
@@ -134,100 +133,6 @@ class TfBadge(QLabel):
         if compact:
             self.setProperty("compact", True)
         repolish(self)
-
-
-class MetricBox(QFrame):
-    """Блок метрики (Масштаб — кликабельный primary, Шаг цены — информационный secondary)."""
-
-    copied = Signal(str, str)
-
-    def __init__(
-        self,
-        title: str,
-        value: str,
-        copy_label: str = "",
-        primary: bool = False,
-        copyable: bool = True,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self._value = str(value)
-        self._copy_label = copy_label
-        self._copyable = copyable
-
-        self.setObjectName("MetricBox")
-        self.setProperty("variant", "primary" if primary else "secondary")
-        self.setProperty("copyable", copyable)
-
-        if copyable:
-            self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-            self.setToolTip(f"Нажмите, чтобы скопировать «{title}»")
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(4)
-
-        top_row = QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(6)
-
-        lbl_title = QLabel(title.upper())
-        lbl_title.setObjectName("MetricLabelPrimary" if primary else "MetricLabelSecondary")
-        lbl_title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-
-        top_row.addWidget(lbl_title)
-        top_row.addStretch(1)
-
-        if copyable:
-            lbl_icon = QLabel("⧉")
-            lbl_icon.setObjectName("MetricLabelPrimary" if primary else "MetricLabelSecondary")
-            lbl_icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            top_row.addWidget(lbl_icon)
-
-        lbl_val = QLabel(self._value)
-        lbl_val.setObjectName("MetricValuePrimary" if primary else "MetricValueSecondary")
-        lbl_val.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-
-        layout.addLayout(top_row)
-        layout.addWidget(lbl_val)
-
-        repolish(self)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if self._copyable and event.button() == Qt.MouseButton.LeftButton:
-            copy_to_clipboard(self._value)
-            self.copied.emit(self._copy_label, self._value)
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-
-class ThresholdButton(QPushButton):
-    """Кликабельная кнопка-порог для таблицы фильтров ClusterSearch."""
-
-    copied = Signal(str, str)
-
-    def __init__(
-        self,
-        value: str,
-        metric_type: str,
-        copy_label: str,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(f"{value}  ⧉", parent)
-        self._value = str(value)
-        self._copy_label = copy_label
-
-        self.setObjectName("ThresholdPill")
-        self.setProperty("metricType", metric_type)
-        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.setToolTip(f"Нажмите, чтобы скопировать порог ({copy_label})")
-        self.clicked.connect(self._on_click)
-        repolish(self)
-
-    def _on_click(self) -> None:
-        copy_to_clipboard(self._value)
-        self.copied.emit(self._copy_label, self._value)
 
 
 class ToastNotification(QLabel):

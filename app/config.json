@@ -2,10 +2,13 @@
   "SYMBOL": "BTCUSDT",
   "SPOT_CLUSTERS": 15,
   "FUTURES_CLUSTERS": 30,
+  "DAYS_BINANCE_4H": 120,
   "DAYS_BINANCE_1H": 60,
   "DAYS_BINANCE_15M": 30,
+  "DAYS_BINANCE_5M": 7,
+  "DAYS_BYBIT_1H": 60,
   "DAYS_BYBIT_15M": 30,
-  "DAYS_BYBIT_5M": 14,
+  "DAYS_BYBIT_5M": 7,
   "CLUSTER_MODE": "round",
   "ATR_LOOKBACK_DAYS": {
     "5": 7,
@@ -54,7 +57,7 @@
     ]
   ],
   "HALF_LIFE_DAYS": {
-    "5": 4.0,
+    "5": 2.0,
     "15": 7.0,
     "60": 14.0,
     "240": 30.0,
@@ -66,7 +69,7 @@
   "TZ_OFFSET_HOURS": 0,
   "CONSOLE_TOP_ROWS": 0,
   "SAVE_SORTED_CSV": false,
-  "OI_DEFAULT_TIMEFRAME": "1h",
+  "OI_DEFAULT_TIMEFRAME": "15m",
   "OI_Z_WINDOW": 60,
   "OI_THRESHOLD_OI": 2.5,
   "OI_THRESHOLD_DELTA": 2.0,
@@ -85,6 +88,6 @@
   "OI_LIVE_ENABLED": true,
   "OI_SHOW_MULTI_BAR": true,
   "OI_SHOW_TRAP_LEVELS": true,
-  "OI_SHOW_SPOT_Z": false,
-  "OI_SHOW_STANDALONE_ABSORPTION": false
+  "OI_SHOW_SPOT_Z": true,
+  "OI_SHOW_STANDALONE_ABSORPTION": true
 }

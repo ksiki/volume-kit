@@ -1,9 +1,14 @@
-"""Оркестрация полной калибровки Volume Kit."""
+"""Оркестрация полной калибровки Volume Kit: Binance Spot и ByBit Futures."""
+
+from __future__ import annotations
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import AppSettings, get_config_service
@@ -15,28 +20,135 @@ from app.services.analytics import (
     get_value_at_percent,
 )
 from app.services.market_data import (
+    MarketScaleInfo,
     compute_scale_info,
     get_binance_spot_tick_size,
     get_bybit_futures_tick_size,
 )
-from app.services.storage import ensure_days_cached, get_utc_dates
+from app.services.storage import ensure_days_cached, get_cache_path, get_utc_dates
 
 log = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, str], None]
 
+SPOT_KEY = "binance_spot"
+FUTURES_KEY = "bybit_futures"
+
+SPOT_TIMEFRAMES: tuple[tuple[str, int], ...] = (
+    ("4h", 240),
+    ("1h", 60),
+    ("15m", 15),
+    ("5m", 5),
+)
+FUTURES_TIMEFRAMES: tuple[tuple[str, int], ...] = (
+    ("1h", 60),
+    ("15m", 15),
+    ("5m", 5),
+)
+
+# Klines-запросы лёгкие, кластерный анализ — тяжёлый по CPU/диску.
+SCALE_WORKERS = 4
+ANALYSIS_WORKERS = 3
+
+
+@dataclass(frozen=True)
+class MarketSpec:
+    """Независимая категория расчёта: рынок и его наборы таймфреймов."""
+
+    key: str
+    title: str
+    timeframes: tuple[tuple[str, int], ...]
+
+    @property
+    def is_spot(self) -> bool:
+        return self.key == SPOT_KEY
+
+
+MARKETS: tuple[MarketSpec, ...] = (
+    MarketSpec(SPOT_KEY, "Binance Spot", SPOT_TIMEFRAMES),
+    MarketSpec(FUTURES_KEY, "ByBit Futures", FUTURES_TIMEFRAMES),
+)
+
 
 @dataclass
 class CalibrationBundle:
+    """Результат полного цикла калибровки."""
+
     report: dict[str, Any]
-    res_spot_15m: TimeframeAnalysis
-    res_fut_5m: TimeframeAnalysis
-    res_spot_1h: TimeframeAnalysis
-    res_fut_15m: TimeframeAnalysis
-    spot_15m_atr: float
-    fut_5m_atr: float
-    spot_1h_atr: float
-    fut_15m_atr: float
+    results: dict[str, TimeframeAnalysis]
+    errors: dict[str, str]
+
+
+def task_key(exchange: str, timeframe: str) -> str:
+    """Ключ задачи расчёта одной пары (рынок, таймфрейм)."""
+    return f"{exchange}:{timeframe}"
+
+
+def _timeframe_days(settings: AppSettings) -> dict[tuple[str, str], int]:
+    """Глубина истории (дни) для каждой пары (рынок, таймфрейм)."""
+    return {
+        (SPOT_KEY, "4h"): settings.days_binance_4h,
+        (SPOT_KEY, "1h"): settings.days_binance_1h,
+        (SPOT_KEY, "15m"): settings.days_binance_15m,
+        (SPOT_KEY, "5m"): settings.days_binance_5m,
+        (FUTURES_KEY, "1h"): settings.days_bybit_1h,
+        (FUTURES_KEY, "15m"): settings.days_bybit_15m,
+        (FUTURES_KEY, "5m"): settings.days_bybit_5m,
+    }
+
+
+def _half_life_days(timeframe_min: int, days: int, settings: AppSettings) -> int:
+    half_life = settings.half_life_days.get(timeframe_min)
+    if half_life is None or half_life <= 0:
+        half_life = max(2.0, days / 3.0)
+    return int(round(half_life))
+
+
+def _timeframe_count_label(count: int) -> str:
+    if count % 10 == 1 and count % 100 != 11:
+        noun = "таймфрейм"
+    elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        noun = "таймфрейма"
+    else:
+        noun = "таймфреймов"
+    return f"{count} {noun}"
+
+
+def market_specs(settings: AppSettings) -> list[dict[str, Any]]:
+    """Статическая спецификация карточек рынков (для плейсхолдеров до расчёта)."""
+    days_map = _timeframe_days(settings)
+    specs: list[dict[str, Any]] = []
+
+    for market in MARKETS:
+        clusters = settings.spot_clusters if market.is_spot else settings.futures_clusters
+        rows: list[dict[str, Any]] = []
+        for timeframe, minutes in market.timeframes:
+            days = days_map[(market.key, timeframe)]
+            rows.append(
+                {
+                    "timeframe": timeframe,
+                    "minutes": minutes,
+                    "days": days,
+                    "half_life_days": _half_life_days(minutes, days, settings),
+                }
+            )
+
+        specs.append(
+            {
+                "id": market.key,
+                "title": market.title,
+                "exchange_key": market.key,
+                "clusters": clusters,
+                "timeframe_count": len(market.timeframes),
+                "summary": (
+                    f"{_timeframe_count_label(len(market.timeframes))} • "
+                    f"сжатие {clusters} кластеров"
+                ),
+                "rows": rows,
+            }
+        )
+
+    return specs
 
 
 def _format_usd(amount: float) -> str:
@@ -47,102 +159,96 @@ def _format_usd(amount: float) -> str:
     return f"${amount:.0f}"
 
 
-def _build_category_data(
-    category_id: str,
-    category_title: str,
-    spot_res: TimeframeAnalysis,
-    fut_res: TimeframeAnalysis,
-    spot_atr: float,
-    fut_atr: float,
-    spot_raw_scale: float,
-    fut_raw_scale: float,
-) -> dict[str, Any]:
-    spot_vol_1 = get_value_at_percent(spot_res.max_volume_sorted, "MaxVolume", 1.0)
-    spot_vol_3 = get_value_at_percent(spot_res.max_volume_sorted, "MaxVolume", 3.0)
-    spot_delta_1 = get_value_at_percent(spot_res.max_delta_sorted, "MaxDelta", 1.0)
-    fut_vol_3 = get_value_at_percent(fut_res.max_volume_sorted, "MaxVolume", 3.0)
+def _compact_number(value: float) -> str:
+    """Число с двумя знаками без лишних нулей (507.20 -> 507.2)."""
+    text = f"{value:.2f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
-    def _make_filter(
-        exchange: str,
-        exchange_key: str,
-        timeframe: str,
-        metric: str,
-        metric_type: str,
-        res: PercentileResult,
-        ref_price: float,
-    ) -> dict[str, Any]:
-        return {
-            "exchange": exchange,
-            "exchange_key": exchange_key,
-            "timeframe": timeframe,
-            "metric": metric,
-            "metric_type": metric_type,
-            "threshold": round(res.value, 2),
-            "threshold_str": f"{res.value:.2f}",
-            "usd_str": _format_usd(res.value * ref_price),
-            "row_num": res.row_num,
-            "total_rows": res.total_rows,
-            "pos_str": f"#{res.row_num} / {res.total_rows}",
-        }
 
+def _format_percentile(res: PercentileResult, reference_price: float) -> dict[str, str]:
     return {
-        "id": category_id,
-        "title": category_title,
-        "spot_tf": spot_res.timeframe,
-        "fut_tf": fut_res.timeframe,
-        "spot_ref_price": round(spot_res.reference_price, 2),
-        "fut_ref_price": round(fut_res.reference_price, 2),
-        "scales": [
-            {
-                "exchange": "Binance Spot",
-                "exchange_key": "binance_spot",
-                "timeframe": spot_res.timeframe,
-                "price_scale": spot_res.price_scale,
-                "price_step": spot_res.price_step,
-                "price_step_str": f"{spot_res.price_step:g}",
-                "atr": round(spot_atr, 2),
-                "raw_scale": round(spot_raw_scale, 2),
-                "days": spot_res.days,
-                "half_life_days": int(round(spot_res.half_life_days)),
-                "total_bars": spot_res.total_bars,
-                "excluded_weekend_bars": spot_res.excluded_weekend_bars,
-                "total_trades": spot_res.total_trades,
-            },
-            {
-                "exchange": "ByBit Futures",
-                "exchange_key": "bybit_futures",
-                "timeframe": fut_res.timeframe,
-                "price_scale": fut_res.price_scale,
-                "price_step": fut_res.price_step,
-                "price_step_str": f"{fut_res.price_step:g}",
-                "atr": round(fut_atr, 2),
-                "raw_scale": round(fut_raw_scale, 2),
-                "days": fut_res.days,
-                "half_life_days": int(round(fut_res.half_life_days)),
-                "total_bars": fut_res.total_bars,
-                "excluded_weekend_bars": fut_res.excluded_weekend_bars,
-                "total_trades": fut_res.total_trades,
-            },
-        ],
-        "filters": [
-            _make_filter(
-                "Binance Spot", "binance_spot", spot_res.timeframe,
-                "MaxVolume (1%)", "vol_1", spot_vol_1, spot_res.reference_price,
-            ),
-            _make_filter(
-                "Binance Spot", "binance_spot", spot_res.timeframe,
-                "MaxVolume (3%)", "vol_3", spot_vol_3, spot_res.reference_price,
-            ),
-            _make_filter(
-                "Binance Spot", "binance_spot", spot_res.timeframe,
-                "MaxDelta (1%)", "delta_1", spot_delta_1, spot_res.reference_price,
-            ),
-            _make_filter(
-                "ByBit Futures", "bybit_futures", fut_res.timeframe,
-                "MaxVolume (3%)", "vol_3", fut_vol_3, fut_res.reference_price,
-            ),
-        ],
+        "value": f"{res.value:.2f}",
+        "usd": _format_usd(res.value * reference_price),
+        "pos": f"#{res.row_num} / {res.total_rows}",
     }
+
+
+def _build_row(
+    market: MarketSpec,
+    timeframe: str,
+    minutes: int,
+    days: int,
+    settings: AppSettings,
+    *,
+    scale: MarketScaleInfo | None,
+    analysis: TimeframeAnalysis | None,
+    error: str | None,
+    missing_days: int,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "timeframe": timeframe,
+        "minutes": minutes,
+        "days": days,
+        "half_life_days": _half_life_days(minutes, days, settings),
+        "step_str": None,
+        "atr_str": None,
+        "scale": None,
+        "vol_1": None,
+        "vol_3": None,
+        "delta_1": None,
+        "missing_days": missing_days,
+        "error": error,
+    }
+
+    if scale is None or analysis is None:
+        return row
+
+    row["half_life_days"] = int(round(analysis.half_life_days))
+    row["step_str"] = f"{scale.price_step:g}"
+    row["atr_str"] = f"{scale.atr:.2f}"
+    row["scale"] = {
+        "value": str(int(scale.price_scale)),
+        "meta": f"Шаг {scale.price_step:g} • ATR {_compact_number(scale.atr)}",
+    }
+
+    reference_price = analysis.reference_price
+    if market.is_spot:
+        row["vol_1"] = _format_percentile(
+            get_value_at_percent(analysis.max_volume_sorted, "MaxVolume", 1.0),
+            reference_price,
+        )
+        row["vol_3"] = _format_percentile(
+            get_value_at_percent(analysis.max_volume_sorted, "MaxVolume", 3.0),
+            reference_price,
+        )
+        row["delta_1"] = _format_percentile(
+            get_value_at_percent(analysis.max_delta_sorted, "MaxDelta", 1.0),
+            reference_price,
+        )
+    else:
+        row["vol_3"] = _format_percentile(
+            get_value_at_percent(analysis.max_volume_sorted, "MaxVolume", 3.0),
+            reference_price,
+        )
+
+    return row
+
+
+def _market_reference_price(
+    market: MarketSpec,
+    results: dict[str, TimeframeAnalysis],
+    scales: dict[str, MarketScaleInfo],
+) -> float | None:
+    for timeframe, _ in market.timeframes:
+        key = task_key(market.key, timeframe)
+        analysis = results.get(key)
+        if analysis is not None and analysis.reference_price > 0:
+            return round(analysis.reference_price, 2)
+        scale = scales.get(key)
+        if scale is not None and scale.reference_price > 0:
+            return round(scale.reference_price, 2)
+    return None
+
 
 
 def run_calibration(
@@ -150,112 +256,277 @@ def run_calibration(
     *,
     settings: AppSettings | None = None,
 ) -> CalibrationBundle:
-    """Выполняет полный цикл калибровки и возвращает структурированный отчёт."""
+    """Выполняет полный цикл калибровки по двум рынкам и возвращает отчёт."""
     if settings is None:
         settings = get_config_service().current
 
+    report_lock = threading.Lock()
+    last_pct = {"value": -1}
+
     def _report(pct: int, stage: str) -> None:
-        if progress_cb is not None:
-            progress_cb(pct, stage)
+        if progress_cb is None:
+            return
+        with report_lock:
+            safe_pct = max(last_pct["value"], max(0, min(100, int(pct))))
+            last_pct["value"] = safe_pct
+            progress_cb(safe_pct, stage)
 
     t_total = time.perf_counter()
-    log.info(f"Запуск Volume Kit")
+    log.info("Запуск Volume Kit")
 
-    # 1. Тик-сайзы, Robust ATR и Масштаб Цены
-    _report(5, f"Запрос параметров бирж ({settings.symbol})...")
-    binance_tick = get_binance_spot_tick_size(settings.symbol)
-    bybit_tick = get_bybit_futures_tick_size(settings.symbol)
+    specs = market_specs(settings)
+    days_map = _timeframe_days(settings)
+    clusters = {
+        SPOT_KEY: settings.spot_clusters,
+        FUTURES_KEY: settings.futures_clusters,
+    }
 
-    _report(12, "Расчёт Robust ATR и масштаба (Binance Spot 1h / 15m)...")
-    scale_spot_1h = compute_scale_info("binance_spot", settings.symbol, "1h", binance_tick, settings.spot_clusters, settings=settings)
-    scale_spot_15m = compute_scale_info("binance_spot", settings.symbol, "15m", binance_tick, settings.spot_clusters, settings=settings)
+    # 1. Параметры бирж (тик-сайзы) — два независимых запроса.
+    _report(3, f"Запрос параметров бирж ({settings.symbol})...")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_binance = pool.submit(get_binance_spot_tick_size, settings.symbol)
+        future_bybit = pool.submit(get_bybit_futures_tick_size, settings.symbol)
+        tick_sizes = {
+            SPOT_KEY: future_binance.result(),
+            FUTURES_KEY: future_bybit.result(),
+        }
 
-    _report(20, "Расчёт Robust ATR и масштаба (ByBit Futures 15m / 5m)...")
-    scale_fut_15m = compute_scale_info("bybit_futures", settings.symbol, "15m", bybit_tick, settings.futures_clusters, settings=settings)
-    scale_fut_5m = compute_scale_info("bybit_futures", settings.symbol, "5m", bybit_tick, settings.futures_clusters, settings=settings)
+    # 2. Robust ATR и масштаб цены для всех наборов параллельно.
+    _report(10, "Расчёт Robust ATR и масштаба...")
+    scale_tasks = [
+        (market.key, timeframe)
+        for market in MARKETS
+        for timeframe, _ in market.timeframes
+    ]
+    scales: dict[str, MarketScaleInfo] = {}
+    errors: dict[str, str] = {}
+    scale_done = 0
 
-    # 2. Загрузка и кэширование недостающих дней
-    max_binance_days = max(settings.days_binance_1h, settings.days_binance_15m)
-    max_bybit_days = max(settings.days_bybit_15m, settings.days_bybit_5m)
+    with ThreadPoolExecutor(max_workers=SCALE_WORKERS) as pool:
+        submitted = {
+            pool.submit(
+                compute_scale_info,
+                exchange,
+                settings.symbol,
+                timeframe,
+                tick_sizes[exchange],
+                clusters[exchange],
+                settings,
+            ): (exchange, timeframe)
+            for exchange, timeframe in scale_tasks
+        }
+        for future in as_completed(submitted):
+            exchange, timeframe = submitted[future]
+            key = task_key(exchange, timeframe)
+            scale_done += 1
+            try:
+                scales[key] = future.result()
+            except Exception as exc:  # noqa: BLE001 - ошибка одного ТФ не рушит расчёт
+                errors[key] = str(exc)
+                log.exception(
+                    f"Ошибка масштаба {exchange} {timeframe}: {exc}",
+                    extra={"tool": "Calibrator"},
+                )
+            _report(
+                10 + int(20 * scale_done / max(1, len(scale_tasks))),
+                f"Масштаб и ATR · {scale_done}/{len(scale_tasks)}",
+            )
 
-    _report(28, f"Проверка кэша и загрузка Binance Spot ({max_binance_days}д)...")
-    binance_paths_all = ensure_days_cached("binance_spot", settings.symbol, get_utc_dates(max_binance_days), settings=settings)
+    # 3. Кэш сделок: Binance Spot (до 120 дней) и ByBit Futures параллельно.
+    market_days = {
+        market.key: max(
+            days_map[(market.key, timeframe)] for timeframe, _ in market.timeframes
+        )
+        for market in MARKETS
+    }
+    dates_by_market = {
+        key: get_utc_dates(days) for key, days in market_days.items()
+    }
+    missing_expected = {
+        key: sum(
+            1
+            for date_str in dates
+            if not get_cache_path(key, settings.symbol, date_str).exists()
+        )
+        for key, dates in dates_by_market.items()
+    }
+    total_missing = sum(missing_expected.values())
 
-    _report(48, f"Проверка кэша и загрузка ByBit Futures ({max_bybit_days}д)...")
-    bybit_paths_all = ensure_days_cached("bybit_futures", settings.symbol, get_utc_dates(max_bybit_days), settings=settings)
+    cache_done = {key: 0 for key in market_days}
+    cache_errors: dict[str, str] = {}
 
-    binance_paths_60d = binance_paths_all[-settings.days_binance_1h:]
-    binance_paths_30d = binance_paths_all[-settings.days_binance_15m:]
-    bybit_paths_30d = bybit_paths_all[-settings.days_bybit_15m:]
-    bybit_paths_14d = bybit_paths_all[-settings.days_bybit_5m:]
+    def _on_cache_progress(exchange: str, done: int, total: int) -> None:
+        cache_done[exchange] = done
+        overall = sum(cache_done.values())
+        _report(
+            30 + int(25 * overall / max(1, total_missing)),
+            f"Загрузка истории · {overall}/{total_missing} дней",
+        )
 
-    # 3. Кластерный анализ
-    _report(64, "Кластерный анализ Binance Spot 15m...")
-    res_spot_15m = analyze_timeframe(
-        "binance_spot", settings.symbol, "15m", 15, settings.days_binance_15m,
-        binance_paths_30d, scale_spot_15m.price_scale, scale_spot_15m.price_step, reference_price=scale_spot_15m.reference_price,
-        settings=settings,
+    _report(
+        30,
+        "Проверка кэша и загрузка истории "
+        f"(Binance {market_days[SPOT_KEY]}д / ByBit {market_days[FUTURES_KEY]}д)...",
     )
 
-    _report(73, "Кластерный анализ ByBit Futures 5m...")
-    res_fut_5m = analyze_timeframe(
-        "bybit_futures", settings.symbol, "5m", 5, settings.days_bybit_5m,
-        bybit_paths_14d, scale_fut_5m.price_scale, scale_fut_5m.price_step, reference_price=scale_fut_5m.reference_price,
-        settings=settings,
-    )
+    download_workers = max(2, settings.download_workers // 2)
+    paths_by_market: dict[str, list[Path]] = {}
 
-    _report(82, "Кластерный анализ Binance Spot 1h...")
-    res_spot_1h = analyze_timeframe(
-        "binance_spot", settings.symbol, "1h", 60, settings.days_binance_1h,
-        binance_paths_60d, scale_spot_1h.price_scale, scale_spot_1h.price_step, reference_price=scale_spot_1h.reference_price,
-        settings=settings,
-    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        submitted_cache = {
+            pool.submit(
+                ensure_days_cached,
+                key,
+                settings.symbol,
+                dates_by_market[key],
+                settings,
+                max_workers=download_workers,
+                progress_cb=_on_cache_progress,
+            ): key
+            for key in market_days
+        }
+        for future in as_completed(submitted_cache):
+            exchange = submitted_cache[future]
+            try:
+                paths_by_market[exchange] = future.result()
+            except Exception as exc:  # noqa: BLE001 - ошибка рынка не рушит второй рынок
+                cache_errors[exchange] = str(exc)
+                log.exception(
+                    f"Ошибка загрузки истории {exchange}: {exc}",
+                    extra={"tool": "Calibrator"},
+                )
 
-    _report(92, "Кластерный анализ ByBit Futures 15m...")
-    res_fut_15m = analyze_timeframe(
-        "bybit_futures", settings.symbol, "15m", 15, settings.days_bybit_15m,
-        bybit_paths_30d, scale_fut_15m.price_scale, scale_fut_15m.price_step, reference_price=scale_fut_15m.reference_price,
-        settings=settings,
-    )
+    _report(55, "История загружена, проверка целостности...")
+
+    existing_dates: dict[str, set[str]] = {
+        key: {path.stem for path in paths_by_market.get(key, [])}
+        for key in market_days
+    }
+    for key, dates in dates_by_market.items():
+        if key in cache_errors:
+            continue
+        missing_dates = [
+            date_str for date_str in dates if date_str not in existing_dates[key]
+        ]
+        if missing_dates:
+            preview = ", ".join(missing_dates[:5])
+            suffix = "..." if len(missing_dates) > 5 else ""
+            log.warning(
+                f"Кэш {key}: отсутствует {len(missing_dates)} дн. "
+                f"({preview}{suffix}) — расчёт по доступным данным"
+            )
+
+    def _missing_in_window(exchange: str, days: int) -> int:
+        if exchange in cache_errors:
+            return 0
+        window = dates_by_market[exchange][-days:]
+        returned = existing_dates.get(exchange, set())
+        return sum(1 for date_str in window if date_str not in returned)
+
+    # 4. Кластерный анализ всех наборов параллельно.
+    analysis_tasks: list[
+        tuple[MarketSpec, str, int, int, list[Path], MarketScaleInfo]
+    ] = []
+    for market in MARKETS:
+        for timeframe, minutes in market.timeframes:
+            key = task_key(market.key, timeframe)
+            if key in errors:
+                continue
+            if market.key in cache_errors:
+                errors[key] = f"История недоступна: {cache_errors[market.key]}"
+                continue
+            scale = scales.get(key)
+            if scale is None:
+                continue
+
+            days = days_map[(market.key, timeframe)]
+            window_paths = paths_by_market.get(market.key, [])[-days:]
+            if not window_paths:
+                errors[key] = "Нет данных в кэше для расчёта"
+                log.error(
+                    f"Нет данных в кэше: {market.key} {timeframe} ({days}д)",
+                    extra={"tool": "Calibrator"},
+                )
+                continue
+            analysis_tasks.append(
+                (market, timeframe, minutes, days, window_paths, scale)
+            )
+
+    results: dict[str, TimeframeAnalysis] = {}
+    analysis_done = 0
+    _report(55, f"Кластерный анализ · 0/{len(analysis_tasks)}")
+
+    with ThreadPoolExecutor(max_workers=ANALYSIS_WORKERS) as pool:
+        submitted_analysis = {
+            pool.submit(
+                analyze_timeframe,
+                market.key,
+                settings.symbol,
+                timeframe,
+                minutes,
+                days,
+                window_paths,
+                scale.price_scale,
+                scale.price_step,
+                scale.reference_price,
+                settings=settings,
+            ): (market, timeframe)
+            for market, timeframe, minutes, days, window_paths, scale in analysis_tasks
+        }
+        for future in as_completed(submitted_analysis):
+            market, timeframe = submitted_analysis[future]
+            key = task_key(market.key, timeframe)
+            analysis_done += 1
+            try:
+                results[key] = future.result()
+            except Exception as exc:  # noqa: BLE001 - ошибка одного ТФ не рушит остальные
+                errors[key] = str(exc)
+                log.exception(
+                    f"Ошибка кластерного анализа {market.key} {timeframe}: {exc}",
+                    extra={"tool": "Calibrator"},
+                )
+            total_tasks = len(analysis_tasks)
+            _report(
+                55 + int(43 * analysis_done / max(1, total_tasks)),
+                f"Кластерный анализ · {analysis_done}/{total_tasks}",
+            )
 
     if settings.save_sorted_csv:
         log.info(f"Полные таблицы сохранены в: {OUTPUT_DIR}")
 
+    # 5. Сборка отчёта в стабильном порядке (не зависит от порядка потоков).
+    markets_report: list[dict[str, Any]] = []
+    for market, spec in zip(MARKETS, specs):
+        rows = [
+            _build_row(
+                market,
+                timeframe,
+                minutes,
+                days_map[(market.key, timeframe)],
+                settings,
+                scale=scales.get(task_key(market.key, timeframe)),
+                analysis=results.get(task_key(market.key, timeframe)),
+                error=errors.get(task_key(market.key, timeframe)),
+                missing_days=_missing_in_window(
+                    market.key, days_map[(market.key, timeframe)]
+                ),
+            )
+            for timeframe, minutes in market.timeframes
+        ]
+        markets_report.append({**spec, "rows": rows})
+
     elapsed = round(time.perf_counter() - t_total, 2)
     log.info(f"Калибровка {settings.symbol} завершена за {elapsed:.2f}с")
 
-    cat_15m = _build_category_data(
-        "trading_15m", "Трейдинг 15m",
-        res_spot_15m, res_fut_5m,
-        scale_spot_15m.atr, scale_fut_5m.atr,
-        scale_spot_15m.raw_scale, scale_fut_5m.raw_scale,
-    )
-    cat_1h = _build_category_data(
-        "trading_1h", "Трейдинг 1h",
-        res_spot_1h, res_fut_15m,
-        scale_spot_1h.atr, scale_fut_15m.atr,
-        scale_spot_1h.raw_scale, scale_fut_15m.raw_scale,
-    )
-
-    report = {
+    report: dict[str, Any] = {
         "symbol": settings.symbol,
-        "spot_ref_price": round(res_spot_15m.reference_price, 2),
-        "fut_ref_price": round(res_fut_5m.reference_price, 2),
+        "spot_ref_price": _market_reference_price(MARKETS[0], results, scales),
+        "fut_ref_price": _market_reference_price(MARKETS[1], results, scales),
         "elapsed_sec": elapsed,
         "updated_at": datetime.now().strftime("%H:%M:%S"),
-        "categories": [cat_15m, cat_1h],
+        "markets": markets_report,
     }
 
     _report(100, f"Готово за {elapsed:.2f}с")
 
-    return CalibrationBundle(
-        report=report,
-        res_spot_15m=res_spot_15m,
-        res_fut_5m=res_fut_5m,
-        res_spot_1h=res_spot_1h,
-        res_fut_15m=res_fut_15m,
-        spot_15m_atr=scale_spot_15m.atr,
-        fut_5m_atr=scale_fut_5m.atr,
-        spot_1h_atr=scale_spot_1h.atr,
-        fut_15m_atr=scale_fut_15m.atr,
-    )
+    return CalibrationBundle(report=report, results=results, errors=errors)

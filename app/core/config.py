@@ -14,10 +14,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "SYMBOL": "BTCUSDT",
     "SPOT_CLUSTERS": 15,
     "FUTURES_CLUSTERS": 30,
+    "DAYS_BINANCE_4H": 120,
     "DAYS_BINANCE_1H": 60,
     "DAYS_BINANCE_15M": 30,
+    "DAYS_BINANCE_5M": 7,
+    "DAYS_BYBIT_1H": 60,
     "DAYS_BYBIT_15M": 30,
-    "DAYS_BYBIT_5M": 14,
+    "DAYS_BYBIT_5M": 7,
     "CLUSTER_MODE": "round",
     "ATR_LOOKBACK_DAYS": {
         "5": 7,
@@ -39,7 +42,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         [None, 500],
     ],
     "HALF_LIFE_DAYS": {
-        "5": 4.0,
+        "5": 2.0,
         "15": 7.0,
         "60": 14.0,
         "240": 30.0,
@@ -186,8 +189,11 @@ def normalize_config(data: dict[str, Any]) -> dict[str, Any]:
         "SYMBOL": symbol,
         "SPOT_CLUSTERS": max(1, int(merged["SPOT_CLUSTERS"])),
         "FUTURES_CLUSTERS": max(1, int(merged["FUTURES_CLUSTERS"])),
+        "DAYS_BINANCE_4H": max(1, int(merged["DAYS_BINANCE_4H"])),
         "DAYS_BINANCE_1H": max(1, int(merged["DAYS_BINANCE_1H"])),
         "DAYS_BINANCE_15M": max(1, int(merged["DAYS_BINANCE_15M"])),
+        "DAYS_BINANCE_5M": max(1, int(merged["DAYS_BINANCE_5M"])),
+        "DAYS_BYBIT_1H": max(1, int(merged["DAYS_BYBIT_1H"])),
         "DAYS_BYBIT_15M": max(1, int(merged["DAYS_BYBIT_15M"])),
         "DAYS_BYBIT_5M": max(1, int(merged["DAYS_BYBIT_5M"])),
         "CLUSTER_MODE": cluster_mode,
@@ -241,8 +247,11 @@ class AppSettings:
     symbol: str
     spot_clusters: int
     futures_clusters: int
+    days_binance_4h: int
     days_binance_1h: int
     days_binance_15m: int
+    days_binance_5m: int
+    days_bybit_1h: int
     days_bybit_15m: int
     days_bybit_5m: int
     cluster_mode: str
@@ -289,8 +298,11 @@ class AppSettings:
             symbol=str(merged["SYMBOL"]).strip().upper(),
             spot_clusters=int(merged["SPOT_CLUSTERS"]),
             futures_clusters=int(merged["FUTURES_CLUSTERS"]),
+            days_binance_4h=int(merged["DAYS_BINANCE_4H"]),
             days_binance_1h=int(merged["DAYS_BINANCE_1H"]),
             days_binance_15m=int(merged["DAYS_BINANCE_15M"]),
+            days_binance_5m=int(merged["DAYS_BINANCE_5M"]),
+            days_bybit_1h=int(merged["DAYS_BYBIT_1H"]),
             days_bybit_15m=int(merged["DAYS_BYBIT_15M"]),
             days_bybit_5m=int(merged["DAYS_BYBIT_5M"]),
             cluster_mode=str(merged["CLUSTER_MODE"]).strip().lower(),

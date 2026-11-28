@@ -1,7 +1,10 @@
 """Проверка и наполнение локального Parquet-кэша сделок."""
 
+from __future__ import annotations
+
 import logging
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +17,8 @@ from app.services.storage.downloaders import (
 )
 
 log = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[str, int, int], None]
 
 
 def get_utc_dates(days: int) -> list[str]:
@@ -31,10 +36,16 @@ def ensure_days_cached(
     symbol: str,
     dates: list[str],
     settings: AppSettings,
+    *,
+    max_workers: int | None = None,
+    progress_cb: ProgressCallback | None = None,
 ) -> list[Path]:
     """
     Проверяет локальный кэш для списка дат и скачивает только недостающие дни.
     Возвращает упорядоченный список существующих путей к .parquet файлам.
+
+    ``progress_cb(exchange, done, total_missing)`` вызывается после каждого
+    завершённого скачивания (в том числе из потоков загрузки).
     """
     missing: list[tuple[str, Path]] = []
     cached_count = 0
@@ -62,8 +73,9 @@ def ensure_days_cached(
         done = 0
         total_missing = len(missing)
         total_trades = 0
+        workers = max_workers if max_workers is not None else settings.download_workers
 
-        with ThreadPoolExecutor(max_workers=settings.download_workers) as executor:
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
             futures = {
                 executor.submit(worker_fn, symbol, d, p): d
                 for d, p in missing
@@ -85,6 +97,9 @@ def ensure_days_cached(
                     log.warning(
                         f"[{exchange}] [{done:02d}/{total_missing:02d}] {date_str} | статус: {status}"
                     )
+
+                if progress_cb is not None:
+                    progress_cb(exchange, done, total_missing)
 
         log.info(
             f"[{exchange}] Загрузка завершена за {time.perf_counter() - t_start:.2f}с | "

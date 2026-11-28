@@ -194,28 +194,53 @@ class SettingsPage(QWidget):
             "Количество календарных дней, загружаемых для расчёта по каждой бирже и таймфрейму.",
         )
 
-        form = QFormLayout()
-        form.setSpacing(10)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        def _days_spin() -> QSpinBox:
+            box = QSpinBox()
+            box.setRange(1, 365)
+            return box
 
-        self._days_bin_1h = QSpinBox()
-        self._days_bin_1h.setRange(1, 365)
+        self._days_bin_4h = _days_spin()
+        self._days_bin_1h = _days_spin()
+        self._days_bin_15m = _days_spin()
+        self._days_bin_5m = _days_spin()
+        self._days_byb_1h = _days_spin()
+        self._days_byb_15m = _days_spin()
+        self._days_byb_5m = _days_spin()
 
-        self._days_bin_15m = QSpinBox()
-        self._days_bin_15m.setRange(1, 365)
+        spot_form = QFormLayout()
+        spot_form.setSpacing(10)
+        spot_form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        spot_title = QLabel("Binance Spot")
+        spot_title.setObjectName("SettingsSectionTitle")
+        spot_form.addRow(spot_title)
+        spot_form.addRow("4h (DAYS_BINANCE_4H):", self._days_bin_4h)
+        spot_form.addRow("1h (DAYS_BINANCE_1H):", self._days_bin_1h)
+        spot_form.addRow("15m (DAYS_BINANCE_15M):", self._days_bin_15m)
+        spot_form.addRow("5m (DAYS_BINANCE_5M):", self._days_bin_5m)
 
-        self._days_byb_15m = QSpinBox()
-        self._days_byb_15m.setRange(1, 365)
+        futures_form = QFormLayout()
+        futures_form.setSpacing(10)
+        futures_form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        futures_title = QLabel("ByBit Futures")
+        futures_title.setObjectName("SettingsSectionTitle")
+        futures_form.addRow(futures_title)
+        futures_form.addRow("1h (DAYS_BYBIT_1H):", self._days_byb_1h)
+        futures_form.addRow("15m (DAYS_BYBIT_15M):", self._days_byb_15m)
+        futures_form.addRow("5m (DAYS_BYBIT_5M):", self._days_byb_5m)
 
-        self._days_byb_5m = QSpinBox()
-        self._days_byb_5m.setRange(1, 365)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(10)
+        grid.addLayout(spot_form, 0, 0)
+        grid.addLayout(futures_form, 0, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
 
-        form.addRow("Binance Spot 1h (DAYS_BINANCE_1H):", self._days_bin_1h)
-        form.addRow("Binance Spot 15m (DAYS_BINANCE_15M):", self._days_bin_15m)
-        form.addRow("ByBit Futures 15m (DAYS_BYBIT_15M):", self._days_byb_15m)
-        form.addRow("ByBit Futures 5m (DAYS_BYBIT_5M):", self._days_byb_5m)
-
-        lay.addLayout(form)
+        lay.addLayout(grid)
         return card
 
     def _build_analytics_card(self) -> QFrame:
@@ -481,10 +506,13 @@ class SettingsPage(QWidget):
         idx = self._cluster_mode_combo.findText(mode)
         self._cluster_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
+        self._days_bin_4h.setValue(int(cfg.get("DAYS_BINANCE_4H", 120)))
         self._days_bin_1h.setValue(int(cfg.get("DAYS_BINANCE_1H", 60)))
         self._days_bin_15m.setValue(int(cfg.get("DAYS_BINANCE_15M", 30)))
+        self._days_bin_5m.setValue(int(cfg.get("DAYS_BINANCE_5M", 7)))
+        self._days_byb_1h.setValue(int(cfg.get("DAYS_BYBIT_1H", 60)))
         self._days_byb_15m.setValue(int(cfg.get("DAYS_BYBIT_15M", 30)))
-        self._days_byb_5m.setValue(int(cfg.get("DAYS_BYBIT_5M", 14)))
+        self._days_byb_5m.setValue(int(cfg.get("DAYS_BYBIT_5M", 7)))
 
         self._atr_winsor.setValue(float(cfg.get("ATR_WINSOR_PCT", 95.0)))
         self._outlier_ratio.setValue(float(cfg.get("OUTLIER_DAY_MAX_RATIO", 2.5)))
@@ -594,8 +622,11 @@ class SettingsPage(QWidget):
             "SPOT_CLUSTERS": self._spot_clusters_spin.value(),
             "FUTURES_CLUSTERS": self._fut_clusters_spin.value(),
             "CLUSTER_MODE": self._cluster_mode_combo.currentText(),
+            "DAYS_BINANCE_4H": self._days_bin_4h.value(),
             "DAYS_BINANCE_1H": self._days_bin_1h.value(),
             "DAYS_BINANCE_15M": self._days_bin_15m.value(),
+            "DAYS_BINANCE_5M": self._days_bin_5m.value(),
+            "DAYS_BYBIT_1H": self._days_byb_1h.value(),
             "DAYS_BYBIT_15M": self._days_byb_15m.value(),
             "DAYS_BYBIT_5M": self._days_byb_5m.value(),
             "ATR_LOOKBACK_DAYS": atr_map,

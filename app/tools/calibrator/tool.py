@@ -1,6 +1,6 @@
 """Инструмент Calibrator: расчёт объёмных фильтров в фоновом потоке."""
 
-from typing import Any, Callable, cast
+from typing import Any, cast
 
 from PySide6.QtWidgets import QWidget
 
@@ -23,7 +23,6 @@ class CalibratorTool(BaseTool):
     def __init__(self, context: ToolContext) -> None:
         super().__init__(context)
         self._worker: CalibrationWorker | None = None
-        self._unsubscribe_logs: Callable[[], None] | None = None
 
         context.commands.register("calibration.start", self.start_calibration)
         context.commands.register("calibration.mark_stale", self.mark_stale)
@@ -33,11 +32,9 @@ class CalibratorTool(BaseTool):
         return cast(CalibratorPage, self.widget)
 
     def create_widget(self) -> QWidget:
-        page = CalibratorPage()
+        page = CalibratorPage(config=self.context.config)
         page.copied.connect(self._on_copied)
-        page.open_logs_requested.connect(self.context.host.open_logs)
         page.recalc_requested.connect(lambda: self.start_calibration(reload_cfg=True))
-        self._unsubscribe_logs = self.context.host.subscribe_logs(self._on_log_entry)
         page.set_idle()
         return page
 
@@ -78,7 +75,6 @@ class CalibratorTool(BaseTool):
 
     def _on_symbol_changed(self, symbol: str) -> None:
         self.context.host.set_symbol(symbol)
-        self.page.set_symbol(self.context.host.current_symbol)
 
     def _on_calc_finished(self, report: dict[str, Any]) -> None:
         self.context.host.set_symbol(str(report.get("symbol", self.context.config.current.symbol)))
@@ -96,17 +92,10 @@ class CalibratorTool(BaseTool):
             self._worker.deleteLater()
             self._worker = None
 
-    def _on_log_entry(self, entry: dict[str, Any]) -> None:
-        if self.is_widget_created:
-            self.page.append_log_entry(entry)
-
     def _on_copied(self, label: str, value: str) -> None:
         self.context.host.show_toast(f"✓ Скопировано ({label}): {value}")
 
     def shutdown(self) -> None:
-        if self._unsubscribe_logs is not None:
-            self._unsubscribe_logs()
-            self._unsubscribe_logs = None
         if self._worker is not None and self._worker.isRunning():
             self._worker.requestInterruption()
             # Сетевые загрузки могут блокировать поток дольше wait: жёсткий откат при закрытии

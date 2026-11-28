@@ -439,25 +439,6 @@ QLabel#CardTitle {{
     color: {PALETTE["text"]};
 }}
 
-QLabel#SectionLabel {{
-    font-size: 11px;
-    font-weight: 700;
-    color: {PALETTE["text_muted"]};
-    letter-spacing: 0.7px;
-}}
-
-QFrame#ScaleTile {{
-    background-color: {PALETTE["surface_alt"]};
-    border: 1px solid {PALETTE["border"]};
-    border-radius: 10px;
-}}
-
-QLabel#ExchangeName {{
-    font-size: 13.5px;
-    font-weight: 700;
-    color: {PALETTE["text"]};
-}}
-
 QLabel#ScaleMeta {{
     font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
     font-size: 11.5px;
@@ -494,59 +475,40 @@ QLabel#TfBadge[tf="5m"] {{
     border-color: #FED7AA;
     color: #C2410C;
 }}
-
-/* Блоки Масштаб (кликабельный) и Шаг цены (информационный) */
-QFrame#MetricBox {{
-    border-radius: 9px;
-}}
-QFrame#MetricBox[variant="primary"] {{
-    background-color: #FFFBEB;
-    border: 1.5px solid #F59E0B;
-}}
-QFrame#MetricBox[variant="primary"][copyable="true"]:hover {{
-    background-color: #FEF3C7;
-    border: 1.5px solid #D97706;
-}}
-QFrame#MetricBox[variant="secondary"] {{
-    background-color: #FFFFFF;
-    border: 1px solid {PALETTE["border"]};
-}}
-QFrame#MetricBox[variant="secondary"][copyable="true"]:hover {{
-    background-color: {PALETTE["surface_hover"]};
-    border: 1px solid #94A3B8;
-}}
-QFrame#MetricBox[variant="secondary"][copyable="false"] {{
-    background-color: #FFFFFF;
-    border: 1px solid {PALETTE["border"]};
-}}
-
-QLabel#MetricLabelPrimary {{
-    font-size: 10.5px;
-    font-weight: 800;
-    color: #B45309;
-    letter-spacing: 0.6px;
-}}
-QLabel#MetricValuePrimary {{
-    font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
-    font-size: 23px;
-    font-weight: 800;
-    color: #78350F;
-}}
-
-QLabel#MetricLabelSecondary {{
-    font-size: 10.5px;
-    font-weight: 700;
-    color: {PALETTE["text_muted"]};
-    letter-spacing: 0.6px;
-}}
-QLabel#MetricValueSecondary {{
-    font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
-    font-size: 18px;
-    font-weight: 700;
+QLabel#TfBadge[tf="4h"] {{
+    background-color: #F1F5F9;
+    border-color: #CBD5E1;
     color: #334155;
 }}
 
-/* Таблица фильтров ClusterSearch */
+/* Шапка карточки рынка: отдельный objectName, CardHeader других вкладок не меняется */
+QFrame#CalibCardHeader {{
+    background-color: {PALETTE["surface"]};
+    border: none;
+    border-bottom: 1px solid {PALETTE["border"]};
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}}
+
+QLabel#CalibMarketTitle {{
+    font-size: 15px;
+    font-weight: 800;
+    color: {PALETTE["text"]};
+}}
+
+QLabel#CalibMarketMeta {{
+    font-size: 12px;
+    font-weight: 500;
+    color: {PALETTE["text_muted"]};
+}}
+
+/* Чистая табличная сетка Calibrator */
+QFrame#CalibTableHeader {{
+    background-color: transparent;
+    border: none;
+    border-bottom: 1px solid {PALETTE["border"]};
+}}
+
 QLabel#TableHead {{
     font-size: 10.5px;
     font-weight: 700;
@@ -554,73 +516,97 @@ QLabel#TableHead {{
     letter-spacing: 0.6px;
 }}
 
-QFrame#FilterRow {{
-    background-color: {PALETTE["surface_alt"]};
-    border: 1px solid {PALETTE["border"]};
-    border-radius: 8px;
+QFrame#CalibTableRow {{
+    background-color: transparent;
+    border: none;
+    border-bottom: 1px solid #F1F5F9;
 }}
-QFrame#FilterRow:hover {{
-    background-color: {PALETTE["surface_hover"]};
-    border-color: {PALETTE["border_strong"]};
+QFrame#CalibTableRow:hover {{
+    background-color: #F8FAFC;
+}}
+QFrame#CalibTableRow[hovered="true"] {{
+    background-color: #F8FAFC;
+}}
+QFrame#CalibTableRow[last="true"] {{
+    border-bottom: none;
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
 }}
 
-QLabel#FilterMetricName {{
+QLabel#CalibCellMeta {{
     font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
-    font-size: 12.5px;
-    font-weight: 600;
-    color: {PALETTE["text_secondary"]};
+    font-size: 11px;
+    color: {PALETTE["text_muted"]};
 }}
 
-QLabel#FilterUsd {{
+QLabel#CalibCellValue {{
     font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
-    font-size: 12.5px;
+    font-size: 13.5px;
     font-weight: 700;
     color: {PALETTE["text"]};
 }}
 
-QLabel#FilterPos {{
-    font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
+QLabel#CalibRowError {{
     font-size: 11.5px;
-    color: {PALETTE["text_muted"]};
+    font-weight: 600;
+    color: #B91C1C;
 }}
 
-QPushButton#ThresholdPill {{
+/* Пилюли копирования значений */
+QPushButton#CopyPill {{
     font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
-    font-size: 14.5px;
-    font-weight: 800;
-    padding: 5px 12px;
+    font-size: 13.5px;
+    font-weight: 700;
+    padding: 4px 10px;
     border-radius: 7px;
-    min-width: 96px;
-    border: 1px solid {PALETTE["border_strong"]};
-    background-color: #FFFFFF;
+    min-width: 88px;
+    border: 1px solid {PALETTE["border"]};
+    background-color: {PALETTE["surface_alt"]};
     color: {PALETTE["text"]};
 }}
-QPushButton#ThresholdPill[metricType="vol_1"] {{
+QPushButton#CopyPill[variant="amber"] {{
+    background-color: #FFFBEB;
+    border: 1px solid #FDE68A;
+    color: #B45309;
+}}
+QPushButton#CopyPill[variant="amber"]:hover {{
+    background-color: #FEF3C7;
+    border-color: #F59E0B;
+}}
+QPushButton#CopyPill[variant="green"] {{
     background-color: #ECFDF5;
-    border: 1px solid #6EE7B7;
+    border: 1px solid #A7F3D0;
     color: #047857;
 }}
-QPushButton#ThresholdPill[metricType="vol_1"]:hover {{
+QPushButton#CopyPill[variant="green"]:hover {{
     background-color: #D1FAE5;
     border-color: #10B981;
 }}
-QPushButton#ThresholdPill[metricType="vol_3"] {{
+QPushButton#CopyPill[variant="blue"] {{
     background-color: #F0F9FF;
-    border: 1px solid #7DD3FC;
+    border: 1px solid #BAE6FD;
     color: #0369A1;
 }}
-QPushButton#ThresholdPill[metricType="vol_3"]:hover {{
+QPushButton#CopyPill[variant="blue"]:hover {{
     background-color: #E0F2FE;
     border-color: #0EA5E9;
 }}
-QPushButton#ThresholdPill[metricType="delta_1"] {{
+QPushButton#CopyPill[variant="violet"] {{
     background-color: #FAF5FF;
     border: 1px solid #D8B4FE;
     color: #7E22CE;
 }}
-QPushButton#ThresholdPill[metricType="delta_1"]:hover {{
+QPushButton#CopyPill[variant="violet"]:hover {{
     background-color: #F3E8FF;
     border-color: #A855F7;
+}}
+QPushButton#CopyPill[copied="true"] {{
+    border: 1.5px solid #2563EB;
+}}
+QPushButton#CopyPill:disabled {{
+    background-color: {PALETTE["surface_alt"]};
+    border: 1px solid {PALETTE["border"]};
+    color: #94A3B8;
 }}
 
 /* ==================== ОШИБКИ И ПОДСКАЗКИ ==================== */

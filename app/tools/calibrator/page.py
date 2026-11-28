@@ -1,453 +1,535 @@
-import html
+"""Страница Calibrator: две независимые карточки рынков и таблицы ТФ."""
+
+from __future__ import annotations
+
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
     QFrame,
-    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QStackedWidget,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from app.ui.widgets import ExchangeDot, MetricBox, TfBadge, ThresholdButton, repolish
+from app.core.config import ConfigService, get_config_service
+from app.services.calibration import market_specs
+from app.ui.widgets import ExchangeDot, TfBadge, copy_to_clipboard, repolish
+
+# (заголовок, stretch, тип ячейки, вариант пилюли, ключ данных)
+ColumnSpec = tuple[str, int, str, str | None, str | None]
+
+SPOT_COLUMNS: tuple[ColumnSpec, ...] = (
+    ("ТФ / ГЛУБИНА", 17, "tf", None, None),
+    ("МАСШТАБ", 21, "pill", "amber", "scale"),
+    ("MAXVOLUME (1%)", 21, "pill", "green", "vol_1"),
+    ("MAXVOLUME (3%)", 21, "pill", "blue", "vol_3"),
+    ("MAXDELTA (1%)", 20, "pill", "violet", "delta_1"),
+)
+
+FUTURES_COLUMNS: tuple[ColumnSpec, ...] = (
+    ("ТФ / ГЛУБИНА", 20, "tf", None, None),
+    ("МАСШТАБ", 22, "pill", "amber", "scale"),
+    ("ШАГ ЦЕНЫ", 17, "value", None, "step_str"),
+    ("ATR", 17, "value", None, "atr_str"),
+    ("MAXVOLUME (3%)", 24, "pill", "blue", "vol_3"),
+)
+
+ROW_MARGINS = (20, 12, 20, 12)
+HEADER_MARGINS = (20, 8, 20, 8)
+COLUMN_SPACING = 14
+
+_COPY_FEEDBACK_MS = 1000
+
+_IGNORED_POLICY = QSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
 
-class ScaleTile(QFrame):
-    """Плитка параметров сжатия кластеров для одной биржи/ТФ."""
+def _ignored_wrap(widget: QWidget) -> QWidget:
+    """Обёртка с горизонтальным Ignored: содержимое не диктует ширину колонки."""
+    wrap = QWidget()
+    wrap.setSizePolicy(_IGNORED_POLICY)
+    wrap.setMinimumWidth(0)
+    lay = QHBoxLayout(wrap)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(0)
+    lay.addWidget(widget)
+    lay.addStretch(1)
+    return wrap
+
+
+class CopyPill(QPushButton):
+    """Кликабельная пилюля: копирует значение и показывает галочку на ~1 секунду."""
 
     copied = Signal(str, str)
 
-    def __init__(self, scale_data: dict[str, Any], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        variant: str,
+        copy_label: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__("", parent)
+        self.setObjectName("CopyPill")
+        self.setProperty("variant", variant)
+        self.setProperty("copied", False)
+        self._value = ""
+        self._copy_label = copy_label
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._reset_feedback)
+
+        self.clicked.connect(self._on_click)
+        self.set_placeholder()
+        repolish(self)
+
+    def set_value(self, value: str) -> None:
+        self._value = str(value)
+        self.setEnabled(True)
+        self.setToolTip(f"Нажмите, чтобы скопировать ({self._copy_label})")
+        self._render_value()
+
+    def set_placeholder(self) -> None:
+        self._value = ""
+        self.setText("—")
+        self.setEnabled(False)
+        self.setToolTip("")
+
+    def _render_value(self) -> None:
+        self.setText(f"{self._value}  ⧉")
+
+    def _on_click(self) -> None:
+        if not self._value:
+            return
+        copy_to_clipboard(self._value)
+        self.copied.emit(self._copy_label, self._value)
+
+        self.setText("✓")
+        self.setProperty("copied", True)
+        repolish(self)
+        self._timer.start(_COPY_FEEDBACK_MS)
+
+    def _reset_feedback(self) -> None:
+        self.setProperty("copied", False)
+        repolish(self)
+        if self._value:
+            self._render_value()
+
+
+class CalibRow(QFrame):
+    """Строка таблицы: один таймфрейм с бейджем, глубиной и метриками."""
+
+    copied = Signal(str, str)
+
+    def __init__(
+        self,
+        columns: tuple[ColumnSpec, ...],
+        row_spec: dict[str, Any],
+        is_last: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
-        self.setObjectName("ScaleTile")
+        self.setObjectName("CalibTableRow")
+        self.setProperty("last", is_last)
+        self.setProperty("hovered", False)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(10)
+        self._columns = columns
+        self._timeframe = str(row_spec.get("timeframe", ""))
+        self._days = int(row_spec.get("days", 0) or 0)
+        self._half_life = int(row_spec.get("half_life_days", 0) or 0)
 
-        # Заголовок плитки: биржа + ТФ
-        head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 0, 0)
-        head.setSpacing(8)
+        self._pill_keys: list[str] = []
+        self._pills: list[CopyPill] = []
+        self._metas: list[QLabel] = []
+        self._value_keys: list[str] = []
+        self._values: list[QLabel] = []
+        self._cells: list[QWidget] = []
+        self._error_lbl: QLabel | None = None
 
-        dot = ExchangeDot(scale_data["exchange_key"], size=8)
-        ex_lbl = QLabel(scale_data["exchange"])
-        ex_lbl.setObjectName("ExchangeName")
-        tf_badge = TfBadge(scale_data["timeframe"])
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(*ROW_MARGINS)
+        self._grid.setHorizontalSpacing(COLUMN_SPACING)
+        self._grid.setVerticalSpacing(2)
 
-        head.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
-        head.addWidget(ex_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
-        head.addStretch(1)
-        head.addWidget(tf_badge, 0, Qt.AlignmentFlag.AlignVCenter)
-        layout.addLayout(head)
+        for index, (label, stretch, kind, variant, key) in enumerate(columns):
+            self._grid.setColumnStretch(index, stretch)
+            if kind == "tf":
+                cell = self._build_tf_cell()
+            elif kind == "pill":
+                cell = self._build_pill_cell(label, variant or "blue", key or "")
+            else:
+                cell = self._build_value_cell(key or "")
+            self._cells.append(cell)
+            self._grid.addWidget(cell, 0, index, Qt.AlignmentFlag.AlignVCenter)
 
-        # Метрики: Масштаб (кликабельный), Шаг цены (только информация)
-        metrics_row = QHBoxLayout()
-        metrics_row.setContentsMargins(0, 0, 0, 0)
-        metrics_row.setSpacing(8)
+        self.set_placeholder()
+        self._install_hover_tracking()
+        repolish(self)
 
-        scale_box = MetricBox(
-            title="Масштаб",
-            value=str(scale_data["price_scale"]),
-            copy_label=f"Масштаб {scale_data['exchange']} {scale_data['timeframe']}",
-            primary=True,
-            copyable=True,
-        )
-        scale_box.copied.connect(self.copied.emit)
+    # ==================== ПОСТРОЕНИЕ ЯЧЕЕК ====================
 
-        step_box = MetricBox(
-            title="Шаг цены",
-            value=str(scale_data["price_step_str"]),
-            primary=False,
-            copyable=False,
-        )
+    def _build_tf_cell(self) -> QWidget:
+        wrap = QWidget()
+        wrap.setSizePolicy(_IGNORED_POLICY)
+        wrap.setMinimumWidth(0)
 
-        metrics_row.addWidget(scale_box, 5)
-        metrics_row.addWidget(step_box, 4)
-        layout.addLayout(metrics_row)
+        lay = QVBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
 
-        # Метаданные: ATR и окно / half-life
-        meta_row = QHBoxLayout()
-        meta_row.setContentsMargins(2, 0, 2, 0)
-        meta_row.setSpacing(8)
+        self._tf_badge = TfBadge(self._timeframe, compact=True)
+        self._depth_lbl = QLabel("")
+        self._depth_lbl.setObjectName("CalibCellMeta")
 
-        atr_lbl = QLabel(f"ATR <b>{scale_data['atr']:.2f}</b>")
-        atr_lbl.setObjectName("ScaleMeta")
+        lay.addWidget(self._tf_badge, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(self._depth_lbl, 0, Qt.AlignmentFlag.AlignLeft)
+        return wrap
 
-        win_lbl = QLabel(
-            f"Окно <b>{scale_data['days']}д</b> / HL <b>{scale_data['half_life_days']}д</b>"
-        )
-        win_lbl.setObjectName("ScaleMeta")
+    def _build_pill_cell(self, label: str, variant: str, key: str) -> QWidget:
+        wrap = QWidget()
+        wrap.setSizePolicy(_IGNORED_POLICY)
+        wrap.setMinimumWidth(0)
 
-        meta_row.addWidget(atr_lbl)
-        meta_row.addStretch(1)
-        meta_row.addWidget(win_lbl)
-        layout.addLayout(meta_row)
+        lay = QVBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        pill = CopyPill(variant, copy_label=f"{label} {self._timeframe}")
+        pill.copied.connect(self.copied.emit)
+        meta = QLabel("—")
+        meta.setObjectName("CalibCellMeta")
+
+        lay.addWidget(pill, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(meta, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self._pill_keys.append(key)
+        self._pills.append(pill)
+        self._metas.append(meta)
+        return wrap
+
+    def _build_value_cell(self, key: str) -> QWidget:
+        wrap = QWidget()
+        wrap.setSizePolicy(_IGNORED_POLICY)
+        wrap.setMinimumWidth(0)
+
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        value = QLabel("—")
+        value.setObjectName("CalibCellValue")
+        lay.addWidget(value, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addStretch(1)
+
+        self._value_keys.append(key)
+        self._values.append(value)
+        return wrap
 
 
-class CategoryCard(QFrame):
-    """Карточка одной торговой категории (Трейдинг 15m или Трейдинг 1h)."""
+    # ==================== СОСТОЯНИЯ СТРОКИ ====================
+
+    def set_placeholder(self) -> None:
+        """Пустое состояние: аккуратные прочерки без нулей."""
+        self._show_cells()
+        self._depth_lbl.setText(f"{self._days}д • HL {self._half_life}д")
+        self._depth_lbl.setToolTip("")
+        for pill, meta in zip(self._pills, self._metas):
+            pill.set_placeholder()
+            meta.setText("—")
+        for value in self._values:
+            value.setText("—")
+
+    def set_row_data(self, data: dict[str, Any]) -> None:
+        error = data.get("error")
+        if error:
+            self.set_error(str(error))
+            return
+
+        self._show_cells()
+        self._days = int(data.get("days", self._days) or self._days)
+        self._half_life = int(data.get("half_life_days", self._half_life) or self._half_life)
+        self._depth_lbl.setText(f"{self._days}д • HL {self._half_life}д")
+
+        missing_days = int(data.get("missing_days", 0) or 0)
+        if missing_days > 0:
+            self._depth_lbl.setToolTip(
+                f"В кэше отсутствует {missing_days} дн. из {self._days} — "
+                "расчёт по доступным данным"
+            )
+        else:
+            self._depth_lbl.setToolTip("")
+
+        for index, key in enumerate(self._pill_keys):
+            payload = data.get(key)
+            if not isinstance(payload, dict) or not payload.get("value"):
+                self._pills[index].set_placeholder()
+                self._metas[index].setText("—")
+                continue
+
+            self._pills[index].set_value(str(payload["value"]))
+            meta_text = str(payload.get("meta") or "")
+            if not meta_text:
+                parts = [str(payload[name]) for name in ("usd", "pos") if payload.get(name)]
+                meta_text = " • ".join(parts)
+            self._metas[index].setText(meta_text or "—")
+
+        for index, key in enumerate(self._value_keys):
+            value = data.get(key)
+            self._values[index].setText(str(value) if value else "—")
+
+    def set_error(self, message: str) -> None:
+        """Компактный статус ошибки в строке; подробности — в тултипе и логе."""
+        for cell in self._cells[1:]:
+            cell.hide()
+
+        if self._error_lbl is None:
+            self._error_lbl = QLabel("")
+            self._error_lbl.setObjectName("CalibRowError")
+            self._error_lbl.setWordWrap(True)
+            self._error_lbl.installEventFilter(self)
+            self._grid.addWidget(
+                self._error_lbl,
+                0,
+                1,
+                1,
+                max(1, len(self._columns) - 1),
+                Qt.AlignmentFlag.AlignVCenter,
+            )
+
+        self._error_lbl.setText("⚠ Не удалось рассчитать — подробности в логе")
+        self._error_lbl.setToolTip(message)
+        self._error_lbl.show()
+
+    def _show_cells(self) -> None:
+        for cell in self._cells:
+            cell.show()
+        if self._error_lbl is not None:
+            self._error_lbl.hide()
+
+    def apply_column_widths(self, widths: list[int]) -> None:
+        """Фиксирует ширины колонок, чтобы шапка и все строки совпадали пиксель-в-пиксель."""
+        for index, width in enumerate(widths):
+            self._grid.setColumnMinimumWidth(index, width)
+
+    # ==================== HOVER-ПОДСВЕТКА СТРОКИ ====================
+
+    def _install_hover_tracking(self) -> None:
+        """QSS :hover на контейнере не срабатывает над дочерними виджетами."""
+        for widget in (self, *self.findChildren(QWidget)):
+            widget.installEventFilter(self)
+
+    def _set_hovered(self, hovered: bool) -> None:
+        if bool(self.property("hovered")) == hovered:
+            return
+        self.setProperty("hovered", hovered)
+        repolish(self)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt API
+        if event.type() == QEvent.Type.Enter:
+            self._set_hovered(True)
+        elif event.type() == QEvent.Type.Leave:
+            if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+                self._set_hovered(False)
+        return super().eventFilter(watched, event)
+
+
+class MarketCard(QFrame):
+    """Полноширинная карточка рынка с чистой табличной сеткой по таймфреймам."""
 
     copied = Signal(str, str)
 
-    def __init__(self, category: dict[str, Any], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        spec: dict[str, Any],
+        columns: tuple[ColumnSpec, ...],
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("Card")
+        self._columns = columns
+        self._rows: dict[str, CalibRow] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Шапка карточки
+        root.addWidget(self._build_header(spec))
+        root.addWidget(self._build_table_header())
+
+        row_specs = list(spec.get("rows") or [])
+        last_index = len(row_specs) - 1
+        for index, row_spec in enumerate(row_specs):
+            row = CalibRow(columns, row_spec, is_last=index == last_index)
+            row.copied.connect(self.copied.emit)
+            self._rows[str(row_spec.get("timeframe", ""))] = row
+            root.addWidget(row)
+
+    def _build_header(self, spec: dict[str, Any]) -> QFrame:
         header = QFrame()
-        header.setObjectName("CardHeader")
-        h_layout = QHBoxLayout(header)
-        h_layout.setContentsMargins(20, 14, 20, 14)
-        h_layout.setSpacing(10)
+        header.setObjectName("CalibCardHeader")
 
-        title = QLabel(category["title"])
-        title.setObjectName("CardTitle")
+        lay = QHBoxLayout(header)
+        lay.setContentsMargins(20, 14, 20, 14)
+        lay.setSpacing(10)
 
-        spot_tf_badge = TfBadge(
-            f"Spot {category['spot_tf']}", tf_key=category["spot_tf"], compact=True
-        )
-        fut_tf_badge = TfBadge(
-            f"Fut {category['fut_tf']}", tf_key=category["fut_tf"], compact=True
-        )
+        dot = ExchangeDot(str(spec.get("exchange_key", "")), size=9)
+        title = QLabel(str(spec.get("title", "")))
+        title.setObjectName("CalibMarketTitle")
 
-        h_layout.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
-        h_layout.addStretch(1)
-        h_layout.addWidget(spot_tf_badge, 0, Qt.AlignmentFlag.AlignVCenter)
-        h_layout.addWidget(fut_tf_badge, 0, Qt.AlignmentFlag.AlignVCenter)
-        root.addWidget(header)
+        self._summary_lbl = QLabel(str(spec.get("summary", "")))
+        self._summary_lbl.setObjectName("CalibMarketMeta")
 
-        # Тело карточки
-        body = QVBoxLayout()
-        body.setContentsMargins(20, 16, 20, 18)
-        body.setSpacing(16)
+        lay.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addStretch(1)
+        lay.addWidget(self._summary_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        return header
 
-        # Раздел 1: Масштаб и шаг цены
-        sec1_lbl = QLabel("1. МАСШТАБ И ШАГ ЦЕНЫ (СЖАТИЕ КЛАСТЕРОВ)")
-        sec1_lbl.setObjectName("SectionLabel")
-        body.addWidget(sec1_lbl)
+    def _build_table_header(self) -> QFrame:
+        header = QFrame()
+        header.setObjectName("CalibTableHeader")
 
-        scales_grid = QGridLayout()
-        scales_grid.setContentsMargins(0, 0, 0, 0)
-        scales_grid.setHorizontalSpacing(12)
-        scales_grid.setVerticalSpacing(12)
+        self._header_grid = QGridLayout(header)
+        self._header_grid.setContentsMargins(*HEADER_MARGINS)
+        self._header_grid.setHorizontalSpacing(COLUMN_SPACING)
 
-        for idx, scale_data in enumerate(category["scales"]):
-            tile = ScaleTile(scale_data)
-            tile.copied.connect(self.copied.emit)
-            scales_grid.addWidget(tile, 0, idx)
-            scales_grid.setColumnStretch(idx, 1)
+        for index, (label, stretch, _kind, _variant, _key) in enumerate(self._columns):
+            cell = QLabel(label)
+            cell.setObjectName("TableHead")
+            cell.setSizePolicy(_IGNORED_POLICY)
+            cell.setMinimumWidth(0)
+            self._header_grid.addWidget(cell, 0, index, Qt.AlignmentFlag.AlignVCenter)
+            self._header_grid.setColumnStretch(index, stretch)
 
-        body.addLayout(scales_grid)
+        return header
 
-        # Разделитель секций
-        divider = QFrame()
-        divider.setObjectName("SidebarDivider")
-        body.addWidget(divider)
+    # ==================== ДАННЫЕ И ГЕОМЕТРИЯ ====================
 
-        # Раздел 2: Фильтры ClusterSearch
-        sec2_lbl = QLabel("2. ФИЛЬТРЫ CLUSTERSEARCH")
-        sec2_lbl.setObjectName("SectionLabel")
-        body.addWidget(sec2_lbl)
+    def set_placeholder(self) -> None:
+        for row in self._rows.values():
+            row.set_placeholder()
 
-        # Шапка таблицы фильтров
-        tbl_head = QGridLayout()
-        tbl_head.setContentsMargins(12, 0, 12, 0)
-        tbl_head.setHorizontalSpacing(10)
+    def set_market(self, market: dict[str, Any]) -> None:
+        summary = str(market.get("summary") or "")
+        if summary:
+            self._summary_lbl.setText(summary)
 
-        headers = [
-            ("ИНСТРУМЕНТ / ТФ", Qt.AlignmentFlag.AlignLeft, 28),
-            ("ФИЛЬТР", Qt.AlignmentFlag.AlignLeft, 22),
-            ("ПОРОГ", Qt.AlignmentFlag.AlignRight, 22),
-            ("~USD", Qt.AlignmentFlag.AlignRight, 14),
-            ("ПОЗИЦИЯ", Qt.AlignmentFlag.AlignRight, 14),
+        rows_by_tf = {
+            str(row.get("timeframe", "")): row
+            for row in market.get("rows") or []
+            if isinstance(row, dict)
+        }
+        for timeframe, row in self._rows.items():
+            data = rows_by_tf.get(timeframe)
+            if data is None:
+                row.set_placeholder()
+            else:
+                row.set_row_data(data)
+
+    def _column_widths(self) -> list[int]:
+        total = self.contentsRect().width()
+        margins = ROW_MARGINS[0] + ROW_MARGINS[2]
+        spacing = COLUMN_SPACING * max(0, len(self._columns) - 1)
+        usable = max(0, total - margins - spacing)
+        stretch_total = sum(column[1] for column in self._columns) or 1
+
+        widths = [
+            int(usable * column[1] / stretch_total)
+            for column in self._columns[:-1]
         ]
-        for col, (text, align, stretch) in enumerate(headers):
-            lbl = QLabel(text)
-            lbl.setObjectName("TableHead")
-            lbl.setAlignment(align | Qt.AlignmentFlag.AlignVCenter)
-            tbl_head.addWidget(lbl, 0, col)
-            tbl_head.setColumnStretch(col, stretch)
+        widths.append(max(0, usable - sum(widths)))
+        return widths
 
-        body.addLayout(tbl_head)
+    def _sync_column_widths(self) -> None:
+        """Одинаковые ширины колонок для шапки и строк — без сдвигов сетки."""
+        if not hasattr(self, "_header_grid"):
+            return
+        widths = self._column_widths()
+        if not widths:
+            return
+        for index, width in enumerate(widths):
+            self._header_grid.setColumnMinimumWidth(index, width)
+        for row in self._rows.values():
+            row.apply_column_widths(widths)
 
-        # Строки фильтров
-        rows_box = QVBoxLayout()
-        rows_box.setContentsMargins(0, 0, 0, 0)
-        rows_box.setSpacing(7)
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        self._sync_column_widths()
 
-        for f in category["filters"]:
-            row_frame = QFrame()
-            row_frame.setObjectName("FilterRow")
-            row_grid = QGridLayout(row_frame)
-            row_grid.setContentsMargins(12, 8, 12, 8)
-            row_grid.setHorizontalSpacing(10)
-
-            # Колонка 0: Биржа + ТФ
-            inst_wrap = QWidget()
-            inst_lay = QHBoxLayout(inst_wrap)
-            inst_lay.setContentsMargins(0, 0, 0, 0)
-            inst_lay.setSpacing(7)
-
-            is_spot = f["exchange_key"] == "binance_spot"
-            short_name = "Binance Spot" if is_spot else "ByBit Fut"
-
-            inst_lay.addWidget(
-                ExchangeDot(f["exchange_key"], size=7), 0, Qt.AlignmentFlag.AlignVCenter
-            )
-            name_lbl = QLabel(short_name)
-            name_lbl.setStyleSheet("font-weight: 600; font-size: 13px;")
-            inst_lay.addWidget(name_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
-            inst_lay.addWidget(
-                TfBadge(f["timeframe"], compact=True), 0, Qt.AlignmentFlag.AlignVCenter
-            )
-            inst_lay.addStretch(1)
-
-            # Колонка 1: Фильтр
-            metric_lbl = QLabel(f["metric"])
-            metric_lbl.setObjectName("FilterMetricName")
-
-            # Колонка 2: Порог (кнопка копирования)
-            thresh_wrap = QWidget()
-            thresh_lay = QHBoxLayout(thresh_wrap)
-            thresh_lay.setContentsMargins(0, 0, 0, 0)
-            thresh_lay.addStretch(1)
-            btn_thresh = ThresholdButton(
-                value=f["threshold_str"],
-                metric_type=f["metric_type"],
-                copy_label=f"{f['metric']} {f['timeframe']}",
-            )
-            btn_thresh.copied.connect(self.copied.emit)
-            thresh_lay.addWidget(btn_thresh)
-
-            # Колонка 3: ~USD
-            usd_lbl = QLabel(f["usd_str"])
-            usd_lbl.setObjectName("FilterUsd")
-            usd_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-            # Колонка 4: Позиция
-            pos_lbl = QLabel(f["pos_str"])
-            pos_lbl.setObjectName("FilterPos")
-            pos_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-            row_grid.addWidget(inst_wrap, 0, 0)
-            row_grid.addWidget(metric_lbl, 0, 1)
-            row_grid.addWidget(thresh_wrap, 0, 2)
-            row_grid.addWidget(usd_lbl, 0, 3)
-            row_grid.addWidget(pos_lbl, 0, 4)
-
-            for col, (_, _, stretch) in enumerate(headers):
-                row_grid.setColumnStretch(col, stretch)
-
-            rows_box.addWidget(row_frame)
-
-        body.addLayout(rows_box)
-        root.addLayout(body)
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self._sync_column_widths()
 
 
 class CalibratorPage(QWidget):
-    """Инструмент Calibrator внутри Volume Kit."""
+    """Инструмент Calibrator: Binance Spot и ByBit Futures."""
 
     copied = Signal(str, str)
-    open_logs_requested = Signal()
     recalc_requested = Signal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        config: ConfigService | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
-        self._has_report: bool = False
+        self._config = config if config is not None else get_config_service()
+        self._has_report = False
+        self._cards: dict[str, MarketCard] = {}
         self._build_ui()
+        self.set_idle()
+
+    # ==================== ПОСТРОЕНИЕ ИНТЕРФЕЙСА ====================
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Стек состояний: 0 = загрузка, 1 = ошибка (без данных), 2 = дашборд
-        self._stack = QStackedWidget()
-        root.addWidget(self._stack, 1)
+        controls_wrap = QWidget()
+        controls_lay = QVBoxLayout(controls_wrap)
+        controls_lay.setContentsMargins(24, 18, 24, 0)
+        controls_lay.addWidget(self._build_controls())
+        root.addWidget(controls_wrap)
 
-        self._build_loading_view()
-        self._build_error_view()
-        self._build_dashboard_view()
+        banner_wrap = QWidget()
+        banner_lay = QVBoxLayout(banner_wrap)
+        banner_lay.setContentsMargins(24, 12, 24, 0)
+        banner_lay.addWidget(self._build_error_banner())
+        root.addWidget(banner_wrap)
 
-    def _build_loading_view(self) -> None:
-        page = QWidget()
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(28, 48, 28, 28)
-        outer.addStretch(1)
-
-        card = QFrame()
-        card.setObjectName("Card")
-        card.setMaximumWidth(660)
-        card.setMinimumWidth(520)
-
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(24, 22, 24, 22)
-        lay.setSpacing(12)
-
-        top = QHBoxLayout()
-        self._load_title = QLabel("Готов к расчёту")
-        self._load_title.setObjectName("CardTitle")
-
-        self._load_pct = QLabel("0%")
-        self._load_pct.setStyleSheet(
-            "font-family: 'Cascadia Code', Consolas, monospace; "
-            "font-size: 14px; font-weight: 700; color: #2563EB;"
-        )
-        self._load_pct.hide()
-
-        top.addWidget(self._load_title)
-        top.addStretch(1)
-        top.addWidget(self._load_pct)
-        lay.addLayout(top)
-
-        self._load_progress = QProgressBar()
-        self._load_progress.setObjectName("ThinProgress")
-        self._load_progress.setRange(0, 100)
-        self._load_progress.setTextVisible(False)
-        self._load_progress.hide()
-        lay.addWidget(self._load_progress)
-
-        self._load_stage = QLabel("Нажмите «Рассчитать» для запуска калибровки")
-        self._load_stage.setObjectName("SettingsHint")
-        lay.addWidget(self._load_stage)
-
-        self._mini_log = QPlainTextEdit()
-        self._mini_log.setObjectName("LogView")
-        self._mini_log.setReadOnly(True)
-        self._mini_log.setFixedHeight(150)
-        lay.addWidget(self._mini_log)
-
-        actions = QHBoxLayout()
-        actions.addStretch(1)
-        self._start_btn = QPushButton("Рассчитать")
-        self._start_btn.setObjectName("PrimaryBtn")
-        self._start_btn.setFixedHeight(32)
-        self._start_btn.setToolTip("Запустить калибровку вручную")
-        self._start_btn.clicked.connect(self.recalc_requested.emit)
-        actions.addWidget(self._start_btn)
-        btn_logs = QPushButton("Все логи")
-        btn_logs.setObjectName("SecondaryBtn")
-        btn_logs.clicked.connect(self.open_logs_requested.emit)
-        actions.addWidget(btn_logs)
-        lay.addLayout(actions)
-
-        center_row = QHBoxLayout()
-        center_row.addStretch(1)
-        center_row.addWidget(card)
-        center_row.addStretch(1)
-
-        outer.addLayout(center_row)
-        outer.addStretch(2)
-        self._stack.addWidget(page)
-
-    def _build_error_view(self) -> None:
-        page = QWidget()
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(28, 48, 28, 28)
-        outer.addStretch(1)
-
-        card = QFrame()
-        card.setObjectName("Card")
-        card.setMaximumWidth(660)
-        card.setMinimumWidth(520)
-
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(24, 22, 24, 22)
-        lay.setSpacing(14)
-
-        title = QLabel("✕  Ошибка калибровки")
-        title.setStyleSheet("font-size: 16px; font-weight: 700; color: #DC2626;")
-        lay.addWidget(title)
-
-        err_box = QFrame()
-        err_box.setObjectName("ErrorBanner")
-        err_lay = QVBoxLayout(err_box)
-        err_lay.setContentsMargins(14, 12, 14, 12)
-
-        self._error_full_lbl = QLabel("")
-        self._error_full_lbl.setObjectName("ErrorText")
-        self._error_full_lbl.setWordWrap(True)
-        self._error_full_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        err_lay.addWidget(self._error_full_lbl)
-        lay.addWidget(err_box)
-
-        actions = QHBoxLayout()
-        actions.addStretch(1)
-
-        btn_logs = QPushButton("Открыть логи")
-        btn_logs.setObjectName("SecondaryBtn")
-        btn_logs.clicked.connect(self.open_logs_requested.emit)
-
-        btn_retry = QPushButton("Повторить")
-        btn_retry.setObjectName("PrimaryBtn")
-        btn_retry.clicked.connect(self.recalc_requested.emit)
-
-        actions.addWidget(btn_logs)
-        actions.addWidget(btn_retry)
-        lay.addLayout(actions)
-
-        center_row = QHBoxLayout()
-        center_row.addStretch(1)
-        center_row.addWidget(card)
-        center_row.addStretch(1)
-
-        outer.addLayout(center_row)
-        outer.addStretch(2)
-        self._stack.addWidget(page)
-
-    def _build_dashboard_view(self) -> None:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         container = QWidget()
-        self._dash_root = QVBoxLayout(container)
-        self._dash_root.setContentsMargins(24, 22, 24, 28)
-        self._dash_root.setSpacing(18)
+        content = QVBoxLayout(container)
+        content.setContentsMargins(24, 22, 24, 28)
+        content.setSpacing(18)
 
-        # Баннер ошибки пересчёта поверх старых данных
-        self._dash_error_banner = QFrame()
-        self._dash_error_banner.setObjectName("ErrorBanner")
-        self._dash_error_banner.hide()
-        eb_lay = QHBoxLayout(self._dash_error_banner)
-        eb_lay.setContentsMargins(14, 10, 14, 10)
-        self._dash_error_lbl = QLabel("")
-        self._dash_error_lbl.setObjectName("ErrorText")
-        self._dash_error_lbl.setWordWrap(True)
-        eb_lay.addWidget(self._dash_error_lbl, 1)
-        self._dash_root.addWidget(self._dash_error_banner)
+        settings = self._config.current
+        for spec in market_specs(settings):
+            market_id = str(spec.get("id", ""))
+            columns = SPOT_COLUMNS if market_id == "binance_spot" else FUTURES_COLUMNS
+            card = MarketCard(spec, columns)
+            card.copied.connect(self.copied.emit)
+            self._cards[market_id] = card
+            content.addWidget(card)
 
-        self._dash_root.addWidget(self._build_controls())
-
-        # Сетка карточек стратегий (2 колонки)
-        self._cards_wrap = QWidget()
-        self._cards_opacity = QGraphicsOpacityEffect(self._cards_wrap)
-        self._cards_opacity.setOpacity(1.0)
-        self._cards_wrap.setGraphicsEffect(self._cards_opacity)
-
-        self._cards_grid = QGridLayout(self._cards_wrap)
-        self._cards_grid.setContentsMargins(0, 0, 0, 0)
-        self._cards_grid.setHorizontalSpacing(20)
-        self._cards_grid.setVerticalSpacing(20)
-        self._dash_root.addWidget(self._cards_wrap)
-
-        self._dash_root.addStretch(1)
-
+        content.addStretch(1)
         scroll.setWidget(container)
-        self._stack.addWidget(scroll)
+        root.addWidget(scroll, 1)
 
     def _build_controls(self) -> QFrame:
         bar = QFrame()
@@ -457,7 +539,7 @@ class CalibratorPage(QWidget):
         lay.setContentsMargins(16, 10, 16, 10)
         lay.setSpacing(12)
 
-        self._status_lbl = QLabel("Готов к расчёту")
+        self._status_lbl = QLabel("")
         self._status_lbl.setObjectName("CalibStatusLabel")
         self._status_lbl.setProperty("status", "idle")
         repolish(self._status_lbl)
@@ -469,7 +551,7 @@ class CalibratorPage(QWidget):
         self._progress.setFixedWidth(180)
         self._progress.hide()
 
-        self._recalc_btn = QPushButton("↻ Пересчитать")
+        self._recalc_btn = QPushButton("Пересчитать")
         self._recalc_btn.setObjectName("PrimaryBtn")
         self._recalc_btn.setFixedHeight(32)
         self._recalc_btn.setToolTip("Перечитать config.json и обновить расчёт Calibrator")
@@ -481,125 +563,82 @@ class CalibratorPage(QWidget):
         lay.addWidget(self._recalc_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         return bar
 
+    def _build_error_banner(self) -> QFrame:
+        self._error_banner = QFrame()
+        self._error_banner.setObjectName("ErrorBanner")
+        self._error_banner.hide()
+
+        lay = QHBoxLayout(self._error_banner)
+        lay.setContentsMargins(14, 10, 14, 10)
+
+        self._error_lbl = QLabel("")
+        self._error_lbl.setObjectName("ErrorText")
+        self._error_lbl.setWordWrap(True)
+        self._error_lbl.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        lay.addWidget(self._error_lbl, 1)
+        return self._error_banner
+
+
     # ==================== ПУБЛИЧНЫЕ МЕТОДЫ СОСТОЯНИЯ ====================
 
     def set_running(self, symbol: str, progress: int, stage: str) -> None:
-        self._dash_error_banner.hide()
+        """Выполняется пересчёт: кнопка блокируется, показывается прогресс и этап."""
+        self._error_banner.hide()
         self._recalc_btn.setEnabled(False)
-        self._start_btn.setEnabled(False)
-        self._start_btn.hide()
+        self._progress.setValue(max(0, min(100, int(progress))))
+        self._progress.show()
+        self._set_status("running", stage)
 
-        if self._has_report:
-            self._set_status("running", stage)
-            self._progress.setValue(progress)
-            self._progress.show()
-            self._cards_opacity.setOpacity(0.6)
-            self._stack.setCurrentIndex(2)
-        else:
-            self._load_title.setText(f"Калибровка {symbol}")
-            self._load_pct.setText(f"{progress}%")
-            self._load_pct.show()
-            self._load_progress.setValue(progress)
-            self._load_progress.show()
-            self._load_stage.setText(stage)
-            self._stack.setCurrentIndex(0)
-
-    def set_idle(
-        self, hint: str = "Нажмите «Рассчитать» для запуска калибровки"
-    ) -> None:
+    def set_idle(self, hint: str = "Готов к расчёту — нажмите «Пересчитать»") -> None:
         """Нейтральное состояние готовности без запуска расчёта."""
-        self._load_title.setText("Готов к расчёту")
-        self._load_pct.hide()
-        self._load_progress.hide()
-        self._load_stage.setText(hint)
-        self._start_btn.show()
-        self._start_btn.setEnabled(True)
-        self._stack.setCurrentIndex(0)
+        self._recalc_btn.setEnabled(True)
+        self._progress.hide()
+        self._set_status("idle", hint)
 
     def mark_stale(self) -> None:
-        """Параметры изменились — расчёт не запускаем, просим пользователя подтвердить."""
-        if self._has_report:
-            self._dash_error_banner.hide()
-            self._cards_opacity.setOpacity(1.0)
-            self._progress.hide()
-            self._recalc_btn.setEnabled(True)
-            self._set_status("stale", "Параметры изменены — нажмите «Пересчитать»")
-            self._stack.setCurrentIndex(2)
-        else:
-            self.set_idle(
-                "Параметры изменены — нажмите «Рассчитать» для запуска калибровки"
-            )
-
-    def update_progress(self, progress: int, stage: str) -> None:
-        if self._has_report:
-            self._set_status("running", stage)
-            self._progress.setValue(progress)
-        else:
-            self._load_pct.setText(f"{progress}%")
-            self._load_progress.setValue(progress)
-            self._load_stage.setText(stage)
-
-    def set_symbol(self, symbol: str) -> None:
-        self._load_title.setText(f"Калибровка {symbol}")
-
-    def append_log_entry(self, entry: dict[str, Any]) -> None:
-        t = html.escape(str(entry.get("time", "")))
-        logger_name = html.escape(str(entry.get("logger", "")))
-        msg = html.escape(str(entry.get("message", "")))
-
-        self._mini_log.appendHtml(
-            f'<span style="color:#64748B;">{t}</span> '
-            f'<span style="color:#6366F1;">[{logger_name}]</span> '
-            f'<span style="color:#0F172A;">{msg}</span>'
-        )
-        sb = self._mini_log.verticalScrollBar()
-        if sb is not None:
-            sb.setValue(sb.maximum())
-
-    def set_report(self, report: dict[str, Any]) -> None:
-        self._has_report = True
-        self._dash_error_banner.hide()
-        self._cards_opacity.setOpacity(1.0)
+        """Параметры изменились — расчёт не запускаем, просим подтвердить."""
+        self._error_banner.hide()
         self._progress.hide()
         self._recalc_btn.setEnabled(True)
-        self._start_btn.setEnabled(True)
+        if self._has_report:
+            self._set_status("stale", "Параметры изменены — нажмите «Пересчитать»")
+        else:
+            self.set_idle("Параметры изменены — нажмите «Пересчитать»")
 
-        # Очищаем прошлые карточки
-        while self._cards_grid.count():
-            item = self._cards_grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+    def update_progress(self, progress: int, stage: str) -> None:
+        self._progress.setValue(max(0, min(100, int(progress))))
+        self._set_status("running", stage)
 
-        for idx, cat in enumerate(report.get("categories", [])):
-            card = CategoryCard(cat)
-            card.copied.connect(self.copied.emit)
-            self._cards_grid.addWidget(card, 0, idx, Qt.AlignmentFlag.AlignTop)
-            self._cards_grid.setColumnStretch(idx, 1)
+    def set_report(self, report: dict[str, Any]) -> None:
+        """Заполняет карточки результатами; прошлые значения не сбрасываются при ошибке."""
+        self._has_report = True
+        self._error_banner.hide()
+        self._progress.hide()
+        self._recalc_btn.setEnabled(True)
 
-        elapsed = report.get("elapsed_sec", 0)
-        updated_at = report.get("updated_at", "")
-        status_text = f"Готово за {elapsed}с"
+        for market in report.get("markets") or []:
+            if not isinstance(market, dict):
+                continue
+            card = self._cards.get(str(market.get("id", "")))
+            if card is not None:
+                card.set_market(market)
+
+        elapsed = float(report.get("elapsed_sec") or 0.0)
+        updated_at = str(report.get("updated_at") or "")
+        status_text = f"Готово за {elapsed:.1f}с"
         if updated_at:
-            status_text += f" · {updated_at}"
+            status_text += f" • {updated_at}"
         self._set_status("done", status_text)
-
-        self._stack.setCurrentIndex(2)
 
     def set_error(self, error_msg: str) -> None:
         self._progress.hide()
-        self._cards_opacity.setOpacity(1.0)
         self._recalc_btn.setEnabled(True)
-        self._start_btn.setEnabled(True)
         self._set_status("error", "Ошибка расчёта")
-
-        if self._has_report:
-            self._dash_error_lbl.setText(f"Ошибка пересчёта: {error_msg}")
-            self._dash_error_banner.show()
-            self._stack.setCurrentIndex(2)
-        else:
-            self._error_full_lbl.setText(error_msg)
-            self._stack.setCurrentIndex(1)
+        self._error_lbl.setText(f"Ошибка расчёта: {error_msg}")
+        self._error_lbl.setToolTip(error_msg)
+        self._error_banner.show()
 
     def _set_status(self, status_key: str, text: str) -> None:
         self._status_lbl.setProperty("status", status_key)
