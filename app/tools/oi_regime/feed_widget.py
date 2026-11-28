@@ -151,11 +151,24 @@ class AnomalyCard(QFrame):
             passive.setProperty("variant", "passive")
             passive.setToolTip("Спот пассивен при сильном изменении OI")
             pills.addWidget(passive)
-        if event.is_bybit_led:
-            bybit = QLabel("Bybit-led")
-            bybit.setObjectName("OiPill")
-            bybit.setToolTip("Основной прирост/сброс OI прошёл на Bybit")
-            pills.addWidget(bybit)
+        if event.is_single_exchange_led and event.dominant_exchange:
+            led_label = {
+                "bybit": "Bybit-led",
+                "okx": "OKX-led",
+                "binance": "Binance-led",
+            }.get(event.dominant_exchange, f"{event.dominant_exchange}-led")
+            led = QLabel(led_label)
+            led.setObjectName("OiPill")
+            share_text = (
+                f" ({event.dominant_share * 100.0:.0f}%)"
+                if event.dominant_share is not None
+                else ""
+            )
+            led.setToolTip(
+                f"Основной прирост/сброс OI прошёл на "
+                f"{event.dominant_exchange.upper()}{share_text}"
+            )
+            pills.addWidget(led)
         pills.addStretch(1)
         body.addLayout(pills)
 
@@ -253,7 +266,8 @@ class AnomalyFeed(QWidget):
                 event.regime_key,
                 event.is_absorption,
                 event.spot_status,
-                event.is_bybit_led,
+                event.dominant_exchange,
+                event.is_single_exchange_led,
                 event.is_standalone_absorption,
                 round(event.live_progress, 2),
                 round(event.z_doi, 2),

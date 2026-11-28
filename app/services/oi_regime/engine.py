@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from app.services.oi_regime.fetcher import (
+    EXCHANGE_LABELS,
     AlignedRegimeData,
     RawRegimeData,
     align_raw,
@@ -142,24 +143,77 @@ def _numeric_column(frame: pd.DataFrame, name: str) -> pd.Series:
 # ==================== ПРЕДРАСЧЁТЫ ====================
 
 
-def _oi_total_start(frame: pd.DataFrame, bybit_valid: bool) -> pd.Series:
-    """Суммарный стартовый OI активных бирж (Binance + Bybit при валидности)."""
+def _oi_total_start(frame: pd.DataFrame, active_exchanges: list[str]) -> pd.Series:
+    """Суммарный стартовый OI бирж, участвующих в ΔOI на каждом баре.
+
+    Набор бирж определяется ровно непустыми ``delta_oi_<ex>``: это гарантирует,
+    что числитель (``delta_oi_total``) и знаменатель (стартовый OI) на каждом баре
+    собраны по одному и тому же набору валидных бирж.
+    """
     bin_start = _numeric_column(frame, "oi_binance_start")
-    if bybit_valid:
-        by_start = _numeric_column(frame, "oi_bybit_start").fillna(0.0)
-        total = bin_start + by_start
-        return total.where(bin_start.notna())
-    return bin_start
+    bin_delta = _numeric_column(frame, "delta_oi_binance")
+    total = bin_start.copy()
+    for ex in active_exchanges:
+        if ex == "binance":
+            continue
+        ex_start = _numeric_column(frame, f"oi_{ex}_start")
+        ex_delta = _numeric_column(frame, f"delta_oi_{ex}")
+        contribution = ex_start.where(ex_delta.notna(), 0.0).fillna(0.0)
+        total = total.add(contribution, fill_value=0.0)
+    return total.where(bin_delta.notna())
 
 
-def _delta_oi_pct_series(frame: pd.DataFrame, bybit_valid: bool) -> pd.Series:
+def _delta_oi_pct_series(frame: pd.DataFrame, active_exchanges: list[str]) -> pd.Series:
     """Относительный прирост OI в % к стартовому значению активных бирж."""
     delta_total = _numeric_column(frame, "delta_oi_total")
-    total_start = _oi_total_start(frame, bybit_valid)
+    total_start = _oi_total_start(frame, active_exchanges)
     result = pd.Series(np.nan, index=frame.index, dtype=np.float64)
     valid = delta_total.notna() & total_start.notna() & (total_start > _EPS)
     result.loc[valid] = delta_total.loc[valid] / total_start.loc[valid] * 100.0
     return result
+
+
+def _atr14_context(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Wilder ATR(14) строго по закрытым свечам и ATR предыдущей закрытой свечи.
+
+    Незакрытая LIVE-свеча не участвует в расчёте и не «дёргает» сглаживание.
+    Возвращает две серии на индексе кадра: ATR текущей закрытой свечи и ATR
+    предыдущей закрытой свечи (для отношения размаха бара к предыдущему ATR).
+    """
+    empty = pd.Series(np.nan, index=frame.index, dtype=np.float64)
+    if frame is None or frame.empty:
+        return empty, empty.copy()
+
+    if "is_live" in frame:
+        live_mask = frame["is_live"].astype(bool)
+    else:
+        live_mask = pd.Series(False, index=frame.index, dtype=bool)
+    closed = frame.loc[~live_mask]
+    if closed.empty:
+        return empty, empty.copy()
+
+    high = _numeric_column(closed, "high")
+    low = _numeric_column(closed, "low")
+    close = _numeric_column(closed, "close")
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    tr.iloc[0] = high.iloc[0] - low.iloc[0]
+    atr = tr.ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean()
+    prev_atr = atr.shift(1)
+
+    atr_full = pd.Series(np.nan, index=frame.index, dtype=np.float64)
+    prev_full = pd.Series(np.nan, index=frame.index, dtype=np.float64)
+    atr_full.loc[closed.index] = atr.to_numpy(dtype=np.float64)
+    prev_full.loc[closed.index] = prev_atr.to_numpy(dtype=np.float64)
+    return atr_full, prev_full
+
 
 
 def _range_ratio_series(frame: pd.DataFrame, window: int) -> pd.Series:
@@ -554,11 +608,12 @@ def analyze_frame(
     if frame is None or frame.empty:
         raise RuntimeError("Нет данных для расчёта OI & Delta Regime")
 
-    bybit_valid = bool(aligned.bybit_valid)
+    active_exchanges: list[str] = list(aligned.active_exchanges or ["binance"])
     z_window = max(1, int(params.z_window))
     delta_oi_total_s = _numeric_column(frame, "delta_oi_total")
     fut_delta_s = _numeric_column(frame, "fut_delta")
-    delta_oi_pct_s = _delta_oi_pct_series(frame, bybit_valid)
+    delta_oi_pct_s = _delta_oi_pct_series(frame, active_exchanges)
+    atr_s, atr_prev_s = _atr14_context(frame)
 
     # Сила — по %ΔOI; если стартовый OI неизвестен, используем абсолютный ΔOI.
     z_pct, warm_pct = _rolling_robust_z(delta_oi_pct_s, z_window)
@@ -574,14 +629,26 @@ def analyze_frame(
     multi_persist_s = _multi_bar_persistence(frame, multi_doi_s, multi_delta_s, params)
 
     bars_full: list[CandleBar] = []
+    last_closed_atr: float | None = None
     for ts, row in frame.iterrows():
         open_time_ms = int(ts)
         z_doi_val = _opt_float(z_doi.loc[ts])
         z_fut_val = _opt_float(z_fut.loc[ts])
         z_spot_val = _opt_float(z_spot.loc[ts])
         delta_total = _opt_float(row.get("delta_oi_total"))
-        delta_bin = _opt_float(row.get("delta_oi_binance"))
-        delta_by = _opt_float(row.get("delta_oi_bybit"))
+        delta_by_exchange: dict[str, float] = {}
+        oi_start_by_exchange: dict[str, float] = {}
+        oi_end_by_exchange: dict[str, float] = {}
+        for ex in active_exchanges:
+            ex_delta = _opt_float(row.get(f"delta_oi_{ex}"))
+            if ex_delta is not None:
+                delta_by_exchange[ex] = ex_delta
+            ex_start = _opt_float(row.get(f"oi_{ex}_start"))
+            if ex_start is not None:
+                oi_start_by_exchange[ex] = ex_start
+            ex_end = _opt_float(row.get(f"oi_{ex}_end"))
+            if ex_end is not None:
+                oi_end_by_exchange[ex] = ex_end
         delta_pct = _opt_float(row.get("delta_oi_pct")) if "delta_oi_pct" in row else None
         if delta_pct is None:
             delta_pct = _opt_float(delta_oi_pct_s.loc[ts])
@@ -646,13 +713,41 @@ def analyze_frame(
             z_spot_val, z_fut_val, z_doi_val, spot_available, params
         )
 
-        bybit_share: float | None = None
-        is_bybit_led = False
-        if bybit_valid and delta_bin is not None and delta_by is not None:
-            denominator = abs(delta_bin) + abs(delta_by)
-            if denominator > _EPS:
-                bybit_share = abs(delta_by) / denominator
-                is_bybit_led = bool(bybit_share >= 0.75 and abs(delta_by) > _EPS)
+        # ---- Доминирование одной биржи в ΔOI ----
+        dominant_exchange: str | None = None
+        dominant_share: float | None = None
+        is_single_exchange_led = False
+        if len(delta_by_exchange) >= 2:
+            abs_values = {ex: abs(value) for ex, value in delta_by_exchange.items()}
+            total_abs = float(sum(abs_values.values()))
+            if total_abs > _EPS:
+                dominant_exchange = max(abs_values, key=abs_values.__getitem__)
+                dominant_share = abs_values[dominant_exchange] / total_abs
+                threshold = 0.70 if len(delta_by_exchange) >= 3 else 0.75
+                is_single_exchange_led = bool(
+                    dominant_share >= threshold and abs_values[dominant_exchange] > _EPS
+                )
+
+        # ---- Wilder ATR(14): по закрытым свечам, LIVE наследует последний ATR ----
+        bar_range = max(0.0, bar_high - bar_low)
+        atr14_val: float | None
+        range_atr_val: float | None = None
+        if is_live:
+            atr14_val = last_closed_atr
+            if atr14_val is not None and atr14_val > _EPS:
+                range_atr_val = bar_range / atr14_val
+        else:
+            atr14_val = _opt_float(atr_s.loc[ts])
+            prev_atr_val = _opt_float(atr_prev_s.loc[ts])
+            if prev_atr_val is not None and prev_atr_val > _EPS:
+                range_atr_val = bar_range / prev_atr_val
+            if atr14_val is not None:
+                last_closed_atr = atr14_val
+        atr14_pct_val = (
+            atr14_val / bar_close * 100.0
+            if atr14_val is not None and bar_close > _EPS
+            else None
+        )
 
         live_progress = 1.0
         if is_live:
@@ -698,12 +793,6 @@ def analyze_frame(
                 fut_delta=float(fut_delta or 0.0),
                 spot_available=spot_available,
                 spot_delta=spot_delta,
-                oi_binance_start=_opt_float(row.get("oi_binance_start")),
-                oi_binance_end=_opt_float(row.get("oi_binance_end")),
-                oi_bybit_start=_opt_float(row.get("oi_bybit_start")),
-                oi_bybit_end=_opt_float(row.get("oi_bybit_end")),
-                delta_oi_binance=delta_bin,
-                delta_oi_bybit=delta_by,
                 delta_oi_total=delta_total,
                 is_live=is_live,
                 live_start_estimated=bool(row.get("live_start_estimated", False)),
@@ -722,8 +811,12 @@ def analyze_frame(
                 absorption_reason=absorption_reason,
                 spot_status=spot_status,
                 delta_oi_pct=delta_pct,
-                bybit_oi_share=bybit_share,
-                is_bybit_led=is_bybit_led,
+                delta_oi_by_exchange=delta_by_exchange,
+                oi_start_by_exchange=oi_start_by_exchange,
+                oi_end_by_exchange=oi_end_by_exchange,
+                dominant_exchange=dominant_exchange,
+                dominant_share=dominant_share,
+                is_single_exchange_led=is_single_exchange_led,
                 live_progress=live_progress,
                 range_ratio=range_ratio,
                 is_standalone_absorption=bool(
@@ -734,6 +827,9 @@ def analyze_frame(
                 multi_regime_key=multi_regime_key,
                 z_multi_doi=z_multi_doi_val,
                 z_multi_delta=z_multi_delta_val,
+                atr14=atr14_val,
+                atr14_pct=atr14_pct_val,
+                range_atr=range_atr_val,
             )
         )
 
@@ -760,18 +856,21 @@ def analyze_frame(
                 fut_delta=bar.fut_delta,
                 spot_delta=bar.spot_delta,
                 delta_oi_total=bar.delta_oi_total,
-                delta_oi_binance=bar.delta_oi_binance,
-                delta_oi_bybit=bar.delta_oi_bybit,
                 spot_status=bar.spot_status,
                 is_absorption=bar.is_absorption,
                 absorption_reason=bar.absorption_reason,
                 is_live=bar.is_live,
                 delta_oi_pct=bar.delta_oi_pct,
-                is_bybit_led=bar.is_bybit_led,
+                delta_oi_by_exchange=dict(bar.delta_oi_by_exchange),
+                dominant_exchange=bar.dominant_exchange,
+                dominant_share=bar.dominant_share,
+                is_single_exchange_led=bar.is_single_exchange_led,
                 live_progress=bar.live_progress,
                 basis_pct=bar.basis_pct,
                 funding_rate=bar.funding_rate,
                 is_standalone_absorption=bar.is_standalone_absorption,
+                atr14=bar.atr14,
+                range_atr=bar.range_atr,
             )
         )
     events.reverse()
@@ -787,6 +886,22 @@ def analyze_frame(
                 oi_unavailable_before = index
             break
 
+    current_atr14: float | None = None
+    current_atr14_pct: float | None = None
+    for bar in reversed(visible):
+        if not bar.is_live and bar.atr14 is not None:
+            current_atr14 = bar.atr14
+            current_atr14_pct = bar.atr14_pct
+            break
+
+    secondary_active = [ex for ex in active_exchanges if ex != "binance"]
+    if secondary_active:
+        sources_label = "Binance + " + " + ".join(
+            EXCHANGE_LABELS.get(ex, ex) for ex in secondary_active
+        )
+    else:
+        sources_label = "Binance only"
+
     return RegimeBundle(
         symbol=str(symbol).strip().upper(),
         base_asset=base_asset(symbol),
@@ -798,8 +913,10 @@ def analyze_frame(
         warmup_rows=sum(1 for bar in visible if bar.is_warmup),
         spot_available=bool(aligned.spot_available)
         and any(bar.spot_delta is not None for bar in visible),
-        bybit_available=bybit_valid,
-        sources_label="Binance + Bybit" if bybit_valid else "Binance only",
+        active_exchanges=active_exchanges,
+        sources_label=sources_label,
+        current_atr14=current_atr14,
+        current_atr14_pct=current_atr14_pct,
         warnings=list(aligned.warnings),
         updated_at=display_time.strftime("%H:%M:%S"),
         updated_at_ms=int(fetched_at_ms),

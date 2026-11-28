@@ -134,6 +134,17 @@ def _fmt_pct(value: float | None) -> str:
     return f"{value:+.2f}%"
 
 
+def _fmt_atr_price(value: float | None) -> str:
+    """Компактная цена ATR для плашки тулбара."""
+    if value is None:
+        return "—"
+    if abs(value) >= 100:
+        return f"${value:,.1f}"
+    if abs(value) >= 1:
+        return f"${value:,.2f}"
+    return f"${value:.4f}"
+
+
 _TIMEFRAMES = ("5m", "15m", "1h", "4h")
 
 
@@ -274,23 +285,37 @@ class OIRegimePage(QWidget):
         self._status_lbl = QLabel("Готово к загрузке")
         self._status_lbl.setObjectName("OiStatusBadge")
         self._status_lbl.setProperty("state", "ok")
-        self._status_lbl.setMinimumWidth(170)
+        self._status_lbl.setMinimumWidth(0)
+        self._status_lbl.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         self._status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         repolish(self._status_lbl)
 
         self._live_cb = QCheckBox("Live")
         self._live_cb.setToolTip("Автообновление по таймеру из настроек")
+        self._live_cb.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self._live_cb.toggled.connect(self._on_live_toggled)
 
         self._refresh_btn = QPushButton("↻ Обновить")
         self._refresh_btn.setObjectName("SecondaryBtn")
         self._refresh_btn.setFixedHeight(28)
-        self._refresh_btn.setToolTip("Полностью обновить данные Binance/Bybit")
+        self._refresh_btn.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        self._refresh_btn.setToolTip(
+            "Полностью обновить данные: Binance Futures + активные источники OI"
+        )
         self._refresh_btn.clicked.connect(self.refresh_requested.emit)
 
         self._reset_btn = QPushButton("↺ Сброс")
         self._reset_btn.setObjectName("SecondaryBtn")
         self._reset_btn.setFixedHeight(28)
+        self._reset_btn.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self._reset_btn.setToolTip(
             "Сбросить параметры и фильтры OI & Delta Regime к значениям по умолчанию"
         )
@@ -333,7 +358,7 @@ class OIRegimePage(QWidget):
         self._layers_btn.clicked.connect(self._show_layers_menu)
         repolish(self._layers_btn)
 
-        self._stats_btn = QPushButton("📊 Статистика")
+        self._stats_btn = QPushButton("Статистика")
         self._stats_btn.setObjectName("SecondaryBtn")
         self._stats_btn.setFixedHeight(26)
         self._stats_btn.setToolTip("Статистика отработки по типам режимов")
@@ -348,12 +373,22 @@ class OIRegimePage(QWidget):
         )
         self._legend_btn.clicked.connect(self._show_legend)
 
-        row2.addWidget(self._abs_cb)
-        row2.addWidget(self._weak_cb)
-        row2.addWidget(self._z_cb)
-        row2.addWidget(self._layers_btn)
-        row2.addWidget(self._stats_btn)
-        row2.addWidget(self._legend_btn)
+        self._atr_lbl = QLabel("ATR(14): —")
+        self._atr_lbl.setObjectName("OiAtrBadge")
+        self._atr_lbl.setToolTip("Wilder ATR(14) по закрытым свечам текущего таймфрейма")
+        self._atr_lbl.setSizePolicy(
+            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
+        )
+
+        # Строка 2: фильтры → зазор → инструменты/ATR → растяжка → пороги справа.
+        row2.addWidget(self._abs_cb, 0, Qt.AlignmentFlag.AlignVCenter)
+        row2.addWidget(self._weak_cb, 0, Qt.AlignmentFlag.AlignVCenter)
+        row2.addWidget(self._z_cb, 0, Qt.AlignmentFlag.AlignVCenter)
+        row2.addSpacing(8)
+        row2.addWidget(self._layers_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        row2.addWidget(self._stats_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        row2.addWidget(self._legend_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        row2.addWidget(self._atr_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
         row2.addStretch(1)
 
         self._toi_spin = QDoubleSpinBox()
@@ -361,38 +396,54 @@ class OIRegimePage(QWidget):
         self._toi_spin.setSingleStep(0.1)
         self._toi_spin.setDecimals(1)
         self._toi_spin.setFixedWidth(66)
+        self._toi_spin.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self._toi_spin.setToolTip("Минимальный Z-score изменения OI (в σ)")
         self._toi_spin.valueChanged.connect(self._on_spin_changed)
         toi_label = QLabel("Порог OI")
         toi_label.setObjectName("OiToolbarLabel")
         toi_label.setToolTip("Минимальный Z-score изменения OI (в σ)")
-        row2.addWidget(toi_label)
-        row2.addWidget(self._toi_spin)
+        row2.addWidget(toi_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        row2.addWidget(self._toi_spin, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._tdelta_spin = QDoubleSpinBox()
         self._tdelta_spin.setRange(0.5, 6.0)
         self._tdelta_spin.setSingleStep(0.1)
         self._tdelta_spin.setDecimals(1)
         self._tdelta_spin.setFixedWidth(66)
+        self._tdelta_spin.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self._tdelta_spin.setToolTip("Минимальный Z-score фьючерсной дельты (в σ)")
         self._tdelta_spin.valueChanged.connect(self._on_spin_changed)
         tdelta_label = QLabel("Порог Δ")
         tdelta_label.setObjectName("OiToolbarLabel")
         tdelta_label.setToolTip("Минимальный Z-score фьючерсной дельты (в σ)")
-        row2.addWidget(tdelta_label)
-        row2.addWidget(self._tdelta_spin)
+        row2.addWidget(tdelta_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        row2.addWidget(self._tdelta_spin, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._window_spin = QSpinBox()
         self._window_spin.setRange(15, 200)
         self._window_spin.setFixedWidth(58)
+        self._window_spin.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self._window_spin.setToolTip("Размер скользящего окна свечей N")
         self._window_spin.valueChanged.connect(self._on_spin_changed)
         window_label = QLabel("Окно")
         window_label.setObjectName("OiToolbarLabel")
         window_label.setToolTip("Размер скользящего окна свечей N")
-        row2.addWidget(window_label)
-        row2.addWidget(self._window_spin)
+        row2.addWidget(window_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        row2.addWidget(self._window_spin, 0, Qt.AlignmentFlag.AlignVCenter)
         outer.addLayout(row2)
+
+        # Вертикальное центрирование всех виджетов обеих строк.
+        for row in (row1, row2):
+            for index in range(row.count()):
+                widget = row.itemAt(index).widget()
+                if widget is not None:
+                    row.setAlignment(widget, Qt.AlignmentFlag.AlignVCenter)
         return bar
 
 
@@ -704,6 +755,7 @@ class OIRegimePage(QWidget):
         self.chart.set_bundle(bundle, reset_view=old_key != new_key or old_key is None)
         self.feed.set_tz_offset(bundle.params.tz_offset_hours)
         self._apply_filters()
+        self._update_atr_badge(bundle)
         if self._stats_dialog is not None and self._stats_dialog.isVisible():
             self._stats_dialog.set_stats(bundle.outcome_stats)
         self._set_status(
@@ -716,6 +768,24 @@ class OIRegimePage(QWidget):
     def set_loading(self, stage: str = "Загрузка...") -> None:
         self.set_status_text(stage, "loading")
         self._refresh_btn.setEnabled(False)
+        self._update_atr_badge(None)
+
+    def _update_atr_badge(self, bundle: RegimeBundle | None) -> None:
+        """Компактная плашка текущего Wilder ATR(14) во второй строке тулбара."""
+        atr = bundle.current_atr14 if bundle is not None else None
+        pct = bundle.current_atr14_pct if bundle is not None else None
+        if atr is None:
+            self._atr_lbl.setText("ATR(14): —")
+            self._atr_lbl.setToolTip(
+                "Wilder ATR(14) по закрытым свечам появится после загрузки данных"
+            )
+            return
+        suffix = f" ({pct:.2f}%)" if pct is not None else ""
+        self._atr_lbl.setText(f"ATR(14): {_fmt_atr_price(atr)}{suffix}")
+        self._atr_lbl.setToolTip(
+            "Wilder ATR(14) по закрытым свечам · "
+            + (f"{pct:.2f}% от цены" if pct is not None else "процент от цены недоступен")
+        )
 
     def set_error(self, message: str) -> None:
         self._set_status(f"Ошибка: {message}", "error", warnings=[message])

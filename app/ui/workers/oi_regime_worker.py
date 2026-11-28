@@ -47,7 +47,7 @@ class OIRegimeWorker(QThread):
     def run(self) -> None:
         fetcher = OIRegimeFetcher(cancel_check=self.isInterruptionRequested)
         try:
-            self._stage("Загрузка данных Binance/Bybit...")
+            self._stage("Загрузка данных бирж...")
             if self._mode == "live" and self._cached_raw is not None:
                 raw = fetcher.fetch_live(self._cached_raw, self._params, self._stage)
             else:

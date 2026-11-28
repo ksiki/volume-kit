@@ -56,6 +56,28 @@ Z_BAR_HIGH_NEGATIVE = "#DC2626"
 Z_BAR_SPOT = "#D97706"
 Z_THRESHOLD_COLOR = "#94A3B8"
 
+_EXCHANGE_SHORT: dict[str, str] = {
+    "binance": "Bin",
+    "bybit": "Byb",
+    "okx": "OKX",
+}
+_EXCHANGE_LONG: dict[str, str] = {
+    "binance": "Binance",
+    "bybit": "Bybit",
+    "okx": "OKX",
+}
+
+
+def _fmt_atr_short(value: float | None) -> str:
+    """Компактная цена ATR для тултипа свечи."""
+    if value is None or not math.isfinite(value):
+        return "—"
+    if abs(value) >= 100:
+        return f"${value:,.1f}"
+    if abs(value) >= 1:
+        return f"${value:,.2f}"
+    return f"${value:.4f}"
+
 
 def _fmt_num(value: float | None, digits: int = 2, signed: bool = True) -> str:
     if value is None or not math.isfinite(value):
@@ -1285,25 +1307,45 @@ class OIRegimeChart(QWidget):
                 if bar.delta_oi_pct is not None
                 else ""
             )
-            bybit_led = (
-                ' <span style="color:#F472B6;">(в основном Bybit)</span>'
-                if bar.is_bybit_led
-                else ""
-            )
+            led_part = ""
+            if (
+                bar.is_single_exchange_led
+                and bar.dominant_exchange
+                and bar.dominant_share is not None
+            ):
+                label = _EXCHANGE_LONG.get(bar.dominant_exchange, bar.dominant_exchange)
+                led_part = (
+                    f' <span style="color:#F472B6;">'
+                    f"({label} {bar.dominant_share * 100.0:.0f}%)</span>"
+                )
             rows.append(
                 f'ΔOI: <b>{_fmt_num(bar.delta_oi_total)}{base_suffix}</b>{pct_part} '
-                f'<span style="color:#94A3B8;">({_fmt_z(bar.z_doi)})</span>{bybit_led}'
+                f'<span style="color:#94A3B8;">({_fmt_z(bar.z_doi)})</span>{led_part}'
             )
-            share_part = ""
-            if bar.bybit_oi_share is not None:
-                share_part = f" · доля Bybit {bar.bybit_oi_share * 100.0:.0f}%"
-            rows.append(
-                f'<span style="color:#94A3B8;">Binance: '
-                f'{_fmt_num(bar.delta_oi_binance)}{base_suffix} · Bybit: '
-                f'{_fmt_num(bar.delta_oi_bybit)}{base_suffix}{share_part}</span>'
-            )
+            if len(bar.delta_oi_by_exchange) >= 2:
+                parts: list[str] = []
+                for ex in ("binance", "bybit", "okx"):
+                    value = bar.delta_oi_by_exchange.get(ex)
+                    if value is None:
+                        continue
+                    parts.append(f"{_EXCHANGE_SHORT.get(ex, ex)} {_fmt_num(value)}")
+                if parts:
+                    rows.append(
+                        f'<span style="color:#94A3B8;">{" · ".join(parts)}'
+                        f"{base_suffix}</span>"
+                    )
         else:
             rows.append('<span style="color:#94A3B8;">ΔOI: нет данных</span>')
+        if bar.atr14 is not None:
+            atr_pct = (
+                f" ({bar.atr14_pct:.2f}%)" if bar.atr14_pct is not None else ""
+            )
+            volatility = f"ATR(14): {_fmt_atr_short(bar.atr14)}{atr_pct}"
+            if bar.range_atr is not None:
+                volatility += f" · Свеча: {bar.range_atr:.2f}× ATR"
+            rows.append(f'<span style="color:#94A3B8;">{volatility}</span>')
+        else:
+            rows.append('<span style="color:#94A3B8;">ATR(14): —</span>')
         rows.append(
             f'Фьюч. дельта: <b>{_fmt_num(bar.fut_delta)}{base_suffix}</b> '
             f'<span style="color:#94A3B8;">({_fmt_z(bar.z_fut_delta)})</span>'
@@ -1386,6 +1428,7 @@ class OIRegimeChart(QWidget):
             self._tooltip.hide()
             return
         bar = self._bars[self._hover_index]
+        self._tooltip_label.setMaximumWidth(max(220, min(340, self.width() - 40)))
         self._tooltip_label.setText(self._tooltip_html(bar))
         self._tooltip.adjustSize()
         self._position_tooltip()

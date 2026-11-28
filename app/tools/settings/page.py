@@ -371,7 +371,7 @@ class SettingsPage(QWidget):
     def _build_oi_regime_card(self) -> QFrame:
         card, lay = _make_section_card(
             "OI & Delta Regime",
-            "Межбиржевой OI (Binance Futures + Bybit), дельты и robust Z-score. "
+            "Межбиржевой OI (Binance Futures + Bybit + OKX), дельты и robust Z-score. "
             "Binance OI history доступен только за последние 30 дней.",
         )
 
@@ -401,12 +401,21 @@ class SettingsPage(QWidget):
         self._oi_refresh.setSpecialValueText("выкл")
 
         self._oi_use_bybit = QCheckBox("Использовать Bybit OI (OI_USE_BYBIT)")
+        self._oi_use_okx = QCheckBox("Использовать OKX OI (OI_USE_OKX)")
+
+        exchanges_holder = QWidget()
+        exchanges_lay = QHBoxLayout(exchanges_holder)
+        exchanges_lay.setContentsMargins(0, 0, 0, 0)
+        exchanges_lay.setSpacing(16)
+        exchanges_lay.addWidget(self._oi_use_bybit)
+        exchanges_lay.addWidget(self._oi_use_okx)
+        exchanges_lay.addStretch(1)
 
         instrument_form.addRow("ТФ по умолчанию (OI_DEFAULT_TIMEFRAME):", self._oi_tf_combo)
         instrument_form.addRow("Окно Z-score (OI_Z_WINDOW):", self._oi_z_window)
         instrument_form.addRow("Видимых баров (OI_VISIBLE_BARS):", self._oi_visible)
         instrument_form.addRow("Автообновление (OI_REFRESH_SEC):", self._oi_refresh)
-        instrument_form.addRow("", self._oi_use_bybit)
+        instrument_form.addRow("", exchanges_holder)
 
         thresholds_form = QFormLayout()
         thresholds_form.setSpacing(9)
@@ -528,6 +537,7 @@ class SettingsPage(QWidget):
         self._oi_visible.setValue(int(cfg.get("OI_VISIBLE_BARS", 200)))
         self._oi_refresh.setValue(int(cfg.get("OI_REFRESH_SEC", 20)))
         self._oi_use_bybit.setChecked(bool(cfg.get("OI_USE_BYBIT", True)))
+        self._oi_use_okx.setChecked(bool(cfg.get("OI_USE_OKX", True)))
         self._oi_threshold_oi.setValue(float(cfg.get("OI_THRESHOLD_OI", 2.0)))
         self._oi_threshold_delta.setValue(float(cfg.get("OI_THRESHOLD_DELTA", 1.5)))
         self._oi_absorption_min_z.setValue(
@@ -650,6 +660,7 @@ class SettingsPage(QWidget):
             "OI_SPOT_DEAD_MAX_Z": round(self._oi_spot_dead.value(), 2),
             "OI_SPOT_DEAD_EXTREME_OI_Z": round(self._oi_spot_dead_extreme.value(), 2),
             "OI_USE_BYBIT": self._oi_use_bybit.isChecked(),
+            "OI_USE_OKX": self._oi_use_okx.isChecked(),
             "OI_VISIBLE_BARS": self._oi_visible.value(),
             "OI_REFRESH_SEC": self._oi_refresh.value(),
         })

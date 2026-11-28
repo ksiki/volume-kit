@@ -22,19 +22,34 @@ log = logging.getLogger(__name__)
 BINANCE_FAPI = "https://fapi.binance.com"
 BINANCE_SPOT = "https://api.binance.com"
 BYBIT_API = "https://api.bybit.com"
+OKX_API = "https://www.okx.com"
+
+OKX_OI_HISTORY_URL = f"{OKX_API}/api/v5/rubik/stat/contracts/open-interest-history"
+OKX_OPEN_INTEREST_URL = f"{OKX_API}/api/v5/public/open-interest"
 
 TIMEFRAMES: dict[str, dict[str, object]] = {
-    "5m": {"step_ms": 300_000, "bybit": "5min"},
-    "15m": {"step_ms": 900_000, "bybit": "15min"},
-    "1h": {"step_ms": 3_600_000, "bybit": "1h"},
-    "4h": {"step_ms": 14_400_000, "bybit": "4h"},
+    "5m": {"step_ms": 300_000, "bybit": "5min", "okx": "5m"},
+    "15m": {"step_ms": 900_000, "bybit": "15min", "okx": "15m"},
+    "1h": {"step_ms": 3_600_000, "bybit": "1h", "okx": "1H"},
+    "4h": {"step_ms": 14_400_000, "bybit": "4h", "okx": "4H"},
 }
 
 BINANCE_OI_LIMIT = 500
 BYBIT_OI_LIMIT = 200
 BYBIT_MAX_PAGES = 30
+OKX_OI_LIMIT = 100
+OKX_MAX_PAGES = 15
 BINANCE_OI_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
-BYBIT_RECOVERY_COOLDOWN_MS = 5 * 60 * 1000
+SECONDARY_RECOVERY_COOLDOWN_MS = 5 * 60 * 1000
+
+# Фиксированный порядок бирж для подписей, статусов и агрегации.
+EXCHANGE_ORDER: tuple[str, ...] = ("binance", "bybit", "okx")
+SECONDARY_EXCHANGES: tuple[str, ...] = ("bybit", "okx")
+EXCHANGE_LABELS: dict[str, str] = {
+    "binance": "Binance",
+    "bybit": "Bybit",
+    "okx": "OKX",
+}
 
 _STAGE_CB = Callable[[str], None] | None
 _CANCEL_CB = Callable[[], bool] | None
@@ -72,6 +87,20 @@ def spot_symbol_candidates(symbol: str) -> list[str]:
                 candidates.append(stripped)
             break
     return candidates
+
+
+def to_okx_swap_inst_id(symbol: str) -> str | None:
+    """Конвертация тикера Binance в OKX swap instId (BTCUSDT → BTC-USDT-SWAP).
+
+    Поддерживаются только USDT-маржинальные пары; для остальных возвращается ``None``,
+    чтобы OKX-источник корректно отключился без падения мастер-загрузки Binance.
+    """
+    clean = str(symbol).strip().upper()
+    if not clean:
+        return None
+    if clean.endswith("USDT") and len(clean) > len("USDT"):
+        return f"{clean[:-4]}-USDT-SWAP"
+    return None
 
 
 def timeframe_config(timeframe: str) -> dict[str, object]:
@@ -114,11 +143,13 @@ class RawRegimeData:
     fut_klines: pd.DataFrame
     spot_klines: pd.DataFrame | None
     binance_oi: pd.Series
-    bybit_oi: pd.Series | None
     live_binance_oi: float | None
-    live_bybit_oi: float | None
     spot_available: bool
-    bybit_available: bool
+    secondary_oi: dict[str, pd.Series] = field(default_factory=dict)
+    live_secondary_oi: dict[str, tuple[int, float] | None] = field(default_factory=dict)
+    exchange_available: dict[str, bool] = field(default_factory=dict)
+    exchange_retry_ms: dict[str, int] = field(default_factory=dict)
+    enabled_exchanges: tuple[str, ...] = ("binance",)
     warnings: list[str] = field(default_factory=list)
     fetched_at_ms: int = 0
     spot_symbol: str | None = None
@@ -126,7 +157,6 @@ class RawRegimeData:
     funding_series: pd.Series | None = None
     live_basis_pct: float | None = None
     live_funding_rate: float | None = None
-    bybit_retry_ms: int = 0
 
 
 @dataclass
@@ -134,8 +164,10 @@ class AlignedRegimeData:
     """Результат выравнивания сырых данных по сетке свечей."""
 
     frame: pd.DataFrame
-    bybit_valid: bool
     spot_available: bool
+    exchange_valid: dict[str, bool] = field(default_factory=dict)
+    active_exchanges: list[str] = field(default_factory=lambda: ["binance"])
+    live_start_estimated_by_ex: dict[str, bool] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -259,7 +291,20 @@ class OIRegimeFetcher:
             except (requests.RequestException, ValueError) as exc:
                 last_error = exc
                 if attempt < 2:
-                    time.sleep(0.35 * (2**attempt))
+                    delay = 0.35 * (2**attempt)
+                    response = getattr(exc, "response", None)
+                    if response is not None and getattr(response, "status_code", None) in (
+                        418,
+                        429,
+                    ):
+                        retry_after = response.headers.get("Retry-After")
+                        try:
+                            seconds = float(str(retry_after).strip())
+                        except (TypeError, ValueError):
+                            seconds = None
+                        if seconds is not None:
+                            delay = min(max(seconds, delay), 5.0)
+                    time.sleep(delay)
                     self._check_cancel()
         raise RegimeFetchError(f"Не удалось получить {url}: {sanitize_error(last_error)}")
 
@@ -555,6 +600,78 @@ class OIRegimeFetcher:
                 continue
         return pd.Series(collected, dtype=np.float64).sort_index()
 
+    # ==================== OKX OI ====================
+
+    def _fetch_okx_oi(
+        self,
+        inst_id: str,
+        period: str,
+        need_points: int,
+        desired_start: int,
+        stage_cb: _STAGE_CB = None,
+    ) -> pd.Series:
+        """История OI OKX (oiCcy — уже в базовой монете, ctVal не нужен)."""
+        collected: dict[int, float] = {}
+        end_ms: int | None = None
+        for _ in range(OKX_MAX_PAGES):
+            self._check_cancel()
+            if stage_cb is not None:
+                stage_cb("OKX OI history...")
+            params: dict[str, object] = {
+                "instId": inst_id,
+                "period": period,
+                "limit": OKX_OI_LIMIT,
+            }
+            if end_ms is not None:
+                params["end"] = int(end_ms)
+            payload = self._get_json(OKX_OI_HISTORY_URL, params)
+            if not isinstance(payload, dict) or str(payload.get("code")) != "0":
+                raise RegimeFetchError(f"Ошибка OKX open-interest-history: {payload}")
+            rows = payload.get("data") or []
+            if not rows:
+                break
+
+            oldest: int | None = None
+            fresh = 0
+            for row in rows:
+                try:
+                    ts = int(row[0])
+                    value = float(row[2])  # oiCcy — OI в базовой монете
+                except (IndexError, TypeError, ValueError):
+                    continue
+                if ts not in collected:
+                    fresh += 1
+                collected[ts] = value
+                oldest = ts if oldest is None else min(oldest, ts)
+
+            if oldest is None or fresh == 0:
+                break
+            if len(rows) < OKX_OI_LIMIT:
+                break
+            if oldest <= desired_start:
+                break
+            end_ms = oldest - 1
+
+        if not collected:
+            return pd.Series(dtype=np.float64)
+        ordered = pd.Series(collected, dtype=np.float64).sort_index()
+        return ordered.tail(need_points + 5)
+
+    def _fetch_okx_oi_latest(self, inst_id: str, period: str, limit: int = 5) -> pd.Series:
+        payload = self._get_json(
+            OKX_OI_HISTORY_URL,
+            {"instId": inst_id, "period": period, "limit": int(limit)},
+        )
+        if not isinstance(payload, dict) or str(payload.get("code")) != "0":
+            raise RegimeFetchError(f"Ошибка OKX open-interest-history: {payload}")
+        collected: dict[int, float] = {}
+        for row in payload.get("data") or []:
+            try:
+                collected[int(row[0])] = float(row[2])
+            except (IndexError, TypeError, ValueError):
+                continue
+        return pd.Series(collected, dtype=np.float64).sort_index()
+
     # ==================== LIVE OI ====================
 
     def _fetch_binance_live_oi(self, symbol: str) -> float | None:
@@ -574,6 +691,24 @@ class OIRegimeFetcher:
             return None
         value = items[0].get("openInterest")
         return float(value) if _finite(value) else None
+
+    def _fetch_okx_live_oi(self, inst_id: str) -> tuple[int, float] | None:
+        payload = self._get_json(
+            OKX_OPEN_INTEREST_URL, {"instType": "SWAP", "instId": inst_id}
+        )
+        if not isinstance(payload, dict) or str(payload.get("code")) != "0":
+            return None
+        items = payload.get("data") or []
+        if not items:
+            return None
+        item = items[0]
+        if not _finite(item.get("oiCcy")):
+            return None
+        try:
+            ts = int(item.get("ts"))
+        except (TypeError, ValueError):
+            ts = _now_ms()
+        return ts, float(item["oiCcy"])
 
 
 
@@ -646,8 +781,15 @@ class OIRegimeFetcher:
             tf = "1h"
         step_ms = int(cfg["step_ms"])
         bybit_interval = str(cfg["bybit"])
+        okx_period = str(cfg["okx"])
         now_ms = _now_ms()
         closed_needed = max(1, int(params.visible_bars) + int(params.z_window) + 10)
+        enabled_exchanges: tuple[str, ...] = ("binance",)
+        if params.use_bybit:
+            enabled_exchanges += ("bybit",)
+        if params.use_okx:
+            enabled_exchanges += ("okx",)
+        okx_inst_id = to_okx_swap_inst_id(clean)
         warnings: list[str] = []
 
         if stage_cb is not None:
@@ -681,6 +823,22 @@ class OIRegimeFetcher:
                 clean, bybit_interval, closed_needed + 2, desired_start, None
             )
             tasks["live_bybit_oi"] = lambda: self._fetch_bybit_live_oi(clean)
+        if params.use_okx:
+            if okx_inst_id is None:
+                _add_warning(
+                    warnings,
+                    f"OKX OI: тикер {clean} не поддерживается (нужен *USDT) — OKX исключён",
+                )
+                log.info(
+                    "OKX OI недоступен для %s: неподдерживаемый тикер",
+                    clean,
+                    extra={"tool": "OI Regime"},
+                )
+            else:
+                tasks["okx_oi"] = lambda: self._fetch_okx_oi(
+                    okx_inst_id, okx_period, closed_needed + 2, desired_start, None
+                )
+                tasks["live_okx_oi"] = lambda: self._fetch_okx_live_oi(okx_inst_id)
 
         results, errors = self._run_parallel(tasks)
         self._check_cancel()
@@ -734,32 +892,65 @@ class OIRegimeFetcher:
                 extra={"tool": "OI Regime"},
             )
 
-        # ---------- Bybit OI ----------
-        bybit_oi: pd.Series | None = None
-        bybit_ok = False
-        if params.use_bybit:
-            if "bybit_oi" in results and isinstance(results["bybit_oi"], pd.Series):
-                candidate = results["bybit_oi"]
-                if not candidate.empty:
-                    bybit_oi, bybit_ok = candidate, True
-            if not bybit_ok:
-                exc = errors.get("bybit_oi")
+        # ---------- Вторичные источники OI (Bybit / OKX) ----------
+        secondary_oi: dict[str, pd.Series] = {}
+        live_secondary_oi: dict[str, tuple[int, float] | None] = {}
+        exchange_available: dict[str, bool] = {"binance": not binance_oi.empty}
+        exchange_retry_ms: dict[str, int] = {"binance": 0}
+        for ex in SECONDARY_EXCHANGES:
+            if ex not in enabled_exchanges:
+                continue
+            label = EXCHANGE_LABELS[ex]
+            if ex == "okx" and okx_inst_id is None:
+                exchange_available[ex] = False
+                exchange_retry_ms[ex] = 0
+                live_secondary_oi[ex] = None
+                continue
+
+            series = results.get(f"{ex}_oi")
+            available = isinstance(series, pd.Series) and not series.empty
+            if available:
+                secondary_oi[ex] = series  # type: ignore[assignment]
+            else:
+                exc = errors.get(f"{ex}_oi")
                 _add_warning(
                     warnings,
                     (
-                        f"Bybit OI недоступен: {exc} — расчёт только по Binance"
+                        f"{label} OI недоступен: {exc} — {label} исключён из агрегации"
                         if exc is not None
-                        else "Bybit OI пуст — расчёт только по Binance"
+                        else f"{label} OI пуст — {label} исключён из агрегации"
                     ),
                 )
                 log.warning(
-                    "Bybit OI недоступен для %s (%s) — fallback Binance only",
+                    "%s OI недоступен для %s (%s) — биржа исключена из агрегации",
+                    label,
                     clean,
                     tf,
                     extra={"tool": "OI Regime"},
                 )
 
-        # ---------- Live OI ----------
+            live_raw = results.get(f"live_{ex}_oi")
+            live_value: tuple[int, float] | None = None
+            if ex == "okx":
+                if isinstance(live_raw, tuple) and len(live_raw) == 2:
+                    live_value = (int(live_raw[0]), float(live_raw[1]))
+            elif isinstance(live_raw, float):
+                live_value = (now_ms, float(live_raw))
+            if live_value is None and f"live_{ex}_oi" in errors:
+                _add_warning(warnings, f"Live OI {label}: {errors[f'live_{ex}_oi']}")
+                log.warning(
+                    "Live OI %s недоступен для %s: %s",
+                    label,
+                    clean,
+                    errors[f"live_{ex}_oi"],
+                    extra={"tool": "OI Regime"},
+                )
+
+            exchange_available[ex] = bool(available)
+            exchange_retry_ms[ex] = 0
+            live_secondary_oi[ex] = live_value
+
+        # ---------- Live OI Binance ----------
         live_binance_oi: float | None = None
         if isinstance(results.get("live_binance_oi"), float):
             live_binance_oi = results["live_binance_oi"]  # type: ignore[assignment]
@@ -771,18 +962,6 @@ class OIRegimeFetcher:
                 errors["live_binance_oi"],
                 extra={"tool": "OI Regime"},
             )
-        live_bybit_oi: float | None = None
-        if params.use_bybit and bybit_ok:
-            if isinstance(results.get("live_bybit_oi"), float):
-                live_bybit_oi = results["live_bybit_oi"]  # type: ignore[assignment]
-            elif "live_bybit_oi" in errors:
-                _add_warning(warnings, f"Bybit Live OI недоступен: {errors['live_bybit_oi']}")
-                log.warning(
-                    "Bybit Live OI недоступен для %s: %s",
-                    clean,
-                    errors["live_bybit_oi"],
-                    extra={"tool": "OI Regime"},
-                )
 
         # ---------- Basis / Funding (non-fatal) ----------
         basis_klines = results.get("basis")
@@ -812,11 +991,13 @@ class OIRegimeFetcher:
             fut_klines=fut,
             spot_klines=spot,
             binance_oi=binance_oi,
-            bybit_oi=bybit_oi,
             live_binance_oi=live_binance_oi,
-            live_bybit_oi=live_bybit_oi,
             spot_available=spot_ok,
-            bybit_available=bybit_ok,
+            secondary_oi=secondary_oi,
+            live_secondary_oi=live_secondary_oi,
+            exchange_available=exchange_available,
+            exchange_retry_ms=exchange_retry_ms,
+            enabled_exchanges=enabled_exchanges,
             warnings=warnings,
             fetched_at_ms=now_ms,
             spot_symbol=spot_symbol,
@@ -837,11 +1018,17 @@ class OIRegimeFetcher:
             tf = "1h"
         step_ms = int(cfg["step_ms"])
         bybit_interval = str(cfg["bybit"])
+        okx_period = str(cfg["okx"])
         now_ms = _now_ms()
         closed_needed = max(1, int(params.visible_bars) + int(params.z_window) + 10)
+        enabled_exchanges: tuple[str, ...] = ("binance",) + tuple(
+            ex for ex in SECONDARY_EXCHANGES if getattr(params, f"use_{ex}", False)
+        )
+        okx_inst_id = to_okx_swap_inst_id(cached.symbol)
         persistent = (
             "Binance Spot",
             "Bybit OI",
+            "OKX OI",
             "Binance OI history ограничена",
             "Binance OI history пуст",
             "Binance OI history недоступен",
@@ -875,11 +1062,17 @@ class OIRegimeFetcher:
         spot = cached.spot_klines.copy() if cached.spot_klines is not None else None
         spot_ok = cached.spot_available
         spot_symbol = cached.spot_symbol or cached.symbol
-        recover_bybit = bool(
-            params.use_bybit
-            and not cached.bybit_available
-            and (now_ms - int(cached.bybit_retry_ms or 0)) >= BYBIT_RECOVERY_COOLDOWN_MS
-        )
+        recover_secondary: dict[str, bool] = {}
+        for ex in SECONDARY_EXCHANGES:
+            if ex not in enabled_exchanges:
+                continue
+            if ex == "okx" and okx_inst_id is None:
+                continue
+            recover_secondary[ex] = bool(
+                not cached.exchange_available.get(ex, False)
+                and (now_ms - int(cached.exchange_retry_ms.get(ex, 0) or 0))
+                >= SECONDARY_RECOVERY_COOLDOWN_MS
+            )
         desired_start = self._desired_start(fut, step_ms, now_ms, closed_needed)
 
         self._check_cancel()
@@ -894,16 +1087,34 @@ class OIRegimeFetcher:
         }
         if cached.spot_available:
             tasks["spot_patch"] = lambda: self._fetch_klines(BINANCE_SPOT, spot_symbol, tf, 3)
-        if params.use_bybit and cached.bybit_available:
-            tasks["bybit_patch"] = lambda: self._fetch_bybit_oi_latest(
-                cached.symbol, bybit_interval, 5
-            )
-            tasks["live_bybit_oi"] = lambda: self._fetch_bybit_live_oi(cached.symbol)
-        if recover_bybit:
-            tasks["bybit_recover"] = lambda: self._fetch_bybit_oi(
-                cached.symbol, bybit_interval, closed_needed + 2, desired_start, None
-            )
-            tasks["live_bybit_oi"] = lambda: self._fetch_bybit_live_oi(cached.symbol)
+        for ex in SECONDARY_EXCHANGES:
+            if ex not in enabled_exchanges:
+                continue
+            if ex == "okx" and okx_inst_id is None:
+                continue
+            available = bool(cached.exchange_available.get(ex, False))
+            if available:
+                if ex == "bybit":
+                    tasks["bybit_patch"] = lambda: self._fetch_bybit_oi_latest(
+                        cached.symbol, bybit_interval, 5
+                    )
+                    tasks["live_bybit_oi"] = lambda: self._fetch_bybit_live_oi(cached.symbol)
+                else:
+                    tasks["okx_patch"] = lambda: self._fetch_okx_oi_latest(
+                        okx_inst_id, okx_period, 5
+                    )
+                    tasks["live_okx_oi"] = lambda: self._fetch_okx_live_oi(okx_inst_id)
+            elif recover_secondary.get(ex):
+                if ex == "bybit":
+                    tasks["bybit_recover"] = lambda: self._fetch_bybit_oi(
+                        cached.symbol, bybit_interval, closed_needed + 2, desired_start, None
+                    )
+                    tasks["live_bybit_oi"] = lambda: self._fetch_bybit_live_oi(cached.symbol)
+                else:
+                    tasks["okx_recover"] = lambda: self._fetch_okx_oi(
+                        okx_inst_id, okx_period, closed_needed + 2, desired_start, None
+                    )
+                    tasks["live_okx_oi"] = lambda: self._fetch_okx_live_oi(okx_inst_id)
 
         results, errors = self._run_parallel(tasks)
         self._check_cancel()
@@ -935,46 +1146,98 @@ class OIRegimeFetcher:
                 extra={"tool": "OI Regime"},
             )
 
-        bybit_oi = cached.bybit_oi
-        bybit_ok = bool(cached.bybit_available and params.use_bybit)
-        bybit_retry_ms = int(cached.bybit_retry_ms or 0)
-        if params.use_bybit and cached.bybit_available:
-            bybit_patch = results.get("bybit_patch")
-            if isinstance(bybit_patch, pd.Series) and not bybit_patch.empty:
-                bybit_oi = _merge_series(cached.bybit_oi, bybit_patch, closed_needed + 60)
-            elif "bybit_patch" in errors:
-                _add_warning(warnings, f"Live OI history Bybit: {errors['bybit_patch']}")
-                log.warning(
-                    "Live OI history Bybit недоступен для %s: %s",
-                    cached.symbol,
-                    errors["bybit_patch"],
-                    extra={"tool": "OI Regime"},
-                )
-        if recover_bybit:
-            recovered = results.get("bybit_recover")
-            if isinstance(recovered, pd.Series) and not recovered.empty:
-                bybit_oi = _merge_series(cached.bybit_oi, recovered, closed_needed + 60)
-                bybit_ok = True
-                bybit_retry_ms = 0
-                warnings = [w for w in warnings if not w.startswith("Bybit OI")]
-                log.info(
-                    "OI Regime %s %s: Bybit OI восстановлен автоматически",
-                    cached.symbol,
-                    tf,
-                    extra={"tool": "OI Regime"},
-                )
-            else:
-                bybit_retry_ms = now_ms
-                _add_warning(
-                    warnings,
-                    "Bybit OI недоступен — расчёт только по Binance (повтор через 5 мин)",
-                )
-                log.info(
-                    "OI Regime %s %s: Bybit OI всё ещё недоступен, повтор через 5 мин",
-                    cached.symbol,
-                    tf,
-                    extra={"tool": "OI Regime"},
-                )
+        # ---------- Вторичные источники OI (Bybit / OKX) ----------
+        secondary_oi: dict[str, pd.Series] = {}
+        exchange_available: dict[str, bool] = {"binance": True}
+        exchange_retry_ms: dict[str, int] = {"binance": 0}
+        live_secondary_oi: dict[str, tuple[int, float] | None] = {}
+        for ex in SECONDARY_EXCHANGES:
+            if ex not in enabled_exchanges:
+                continue
+            label = EXCHANGE_LABELS[ex]
+            series = cached.secondary_oi.get(ex)
+            available = bool(cached.exchange_available.get(ex, False))
+            retry_ms = int(cached.exchange_retry_ms.get(ex, 0) or 0)
+            if ex == "okx" and okx_inst_id is None:
+                exchange_available[ex] = False
+                exchange_retry_ms[ex] = retry_ms
+                live_secondary_oi[ex] = None
+                continue
+
+            patch = results.get(f"{ex}_patch")
+            if available:
+                if isinstance(patch, pd.Series) and not patch.empty:
+                    series = _merge_series(series, patch, closed_needed + 60)
+                elif f"{ex}_patch" in errors:
+                    _add_warning(
+                        warnings, f"Live OI history {label}: {errors[f'{ex}_patch']}"
+                    )
+                    log.warning(
+                        "Live OI history %s недоступен для %s: %s",
+                        label,
+                        cached.symbol,
+                        errors[f"{ex}_patch"],
+                        extra={"tool": "OI Regime"},
+                    )
+
+            if recover_secondary.get(ex):
+                recovered = results.get(f"{ex}_recover")
+                if isinstance(recovered, pd.Series) and not recovered.empty:
+                    series = _merge_series(
+                        cached.secondary_oi.get(ex), recovered, closed_needed + 60
+                    )
+                    available = True
+                    retry_ms = 0
+                    warnings = [w for w in warnings if not w.startswith(f"{label} OI")]
+                    log.info(
+                        "OI Regime %s %s: %s OI восстановлен автоматически",
+                        cached.symbol,
+                        tf,
+                        label,
+                        extra={"tool": "OI Regime"},
+                    )
+                else:
+                    available = False
+                    retry_ms = now_ms
+                    _add_warning(
+                        warnings,
+                        f"{label} OI недоступен — {label} исключён из агрегации "
+                        "(повтор через 5 мин)",
+                    )
+                    log.info(
+                        "OI Regime %s %s: %s OI всё ещё недоступен, повтор через 5 мин",
+                        cached.symbol,
+                        tf,
+                        label,
+                        extra={"tool": "OI Regime"},
+                    )
+
+            if series is None or series.empty:
+                available = False
+            if available:
+                secondary_oi[ex] = series  # type: ignore[assignment]
+
+            live_raw = results.get(f"live_{ex}_oi")
+            live_value: tuple[int, float] | None = None
+            if available:
+                if ex == "okx":
+                    if isinstance(live_raw, tuple) and len(live_raw) == 2:
+                        live_value = (int(live_raw[0]), float(live_raw[1]))
+                elif isinstance(live_raw, float):
+                    live_value = (now_ms, float(live_raw))
+                if live_value is None and f"live_{ex}_oi" in errors:
+                    _add_warning(warnings, f"Live OI {label}: {errors[f'live_{ex}_oi']}")
+                    log.warning(
+                        "Live OI %s недоступен для %s: %s",
+                        label,
+                        cached.symbol,
+                        errors[f"live_{ex}_oi"],
+                        extra={"tool": "OI Regime"},
+                    )
+
+            exchange_available[ex] = bool(available)
+            exchange_retry_ms[ex] = retry_ms
+            live_secondary_oi[ex] = live_value
 
         live_binance_oi: float | None = None
         if isinstance(results.get("live_binance_oi"), float):
@@ -987,19 +1250,6 @@ class OIRegimeFetcher:
                 errors["live_binance_oi"],
                 extra={"tool": "OI Regime"},
             )
-
-        live_bybit_oi: float | None = None
-        if params.use_bybit and bybit_ok:
-            if isinstance(results.get("live_bybit_oi"), float):
-                live_bybit_oi = results["live_bybit_oi"]  # type: ignore[assignment]
-            elif "live_bybit_oi" in errors:
-                _add_warning(warnings, f"Live OI Bybit: {errors['live_bybit_oi']}")
-                log.warning(
-                    "Live OI Bybit недоступен для %s: %s",
-                    cached.symbol,
-                    errors["live_bybit_oi"],
-                    extra={"tool": "OI Regime"},
-                )
 
         basis_klines = cached.basis_klines
         basis_patch = results.get("basis_patch")
@@ -1026,11 +1276,13 @@ class OIRegimeFetcher:
             fut_klines=fut,
             spot_klines=spot,
             binance_oi=binance_oi,
-            bybit_oi=bybit_oi,
             live_binance_oi=live_binance_oi,
-            live_bybit_oi=live_bybit_oi,
             spot_available=spot_ok,
-            bybit_available=bool(bybit_ok and params.use_bybit),
+            secondary_oi=secondary_oi,
+            live_secondary_oi=live_secondary_oi,
+            exchange_available=exchange_available,
+            exchange_retry_ms=exchange_retry_ms,
+            enabled_exchanges=enabled_exchanges,
             warnings=warnings,
             fetched_at_ms=now_ms,
             spot_symbol=cached.spot_symbol,
@@ -1038,7 +1290,6 @@ class OIRegimeFetcher:
             funding_series=funding_series,
             live_basis_pct=live_basis_pct,
             live_funding_rate=live_funding_rate,
-            bybit_retry_ms=bybit_retry_ms,
         )
 
 
@@ -1098,36 +1349,39 @@ def _align_asof(series: pd.Series | None, target_index: pd.Index) -> pd.Series:
     return aligned.reindex(pd.Index(target))
 
 
-def _prepare_bybit_grid(
+def _prepare_secondary_oi_grid(
+    exchange_id: str,
     raw: RawRegimeData,
     grid: np.ndarray,
     bin_valid_start: int | None,
     bin_valid_end: int | None,
     warnings: list[str],
 ) -> tuple[pd.Series | None, bool]:
-    """Проверяет покрытие Bybit относительно валидного окна Binance OI."""
-    if not raw.bybit_available or raw.bybit_oi is None or raw.bybit_oi.empty:
+    """Проверяет покрытие вторичной биржи относительно валидного окна Binance OI."""
+    label = EXCHANGE_LABELS.get(exchange_id, exchange_id)
+    series = raw.secondary_oi.get(exchange_id)
+    if not raw.exchange_available.get(exchange_id, False) or series is None or series.empty:
         return None, False
     if bin_valid_start is None or bin_valid_end is None:
         return None, False
 
-    by = _normalize_snapshots(raw.bybit_oi, raw.step_ms)
-    if by.empty:
+    normalized = _normalize_snapshots(series, raw.step_ms)
+    if normalized.empty:
         return None, False
-    by_grid = by.reindex(grid)
+    exchange_grid = normalized.reindex(grid)
 
     required_mask = (grid >= bin_valid_start) & (grid <= bin_valid_end)
     required_index = grid[required_mask]
     if required_index.size == 0:
         return None, False
-    required = by_grid.reindex(required_index)
+    required = exchange_grid.reindex(required_index)
     missing = required.isna().to_numpy()
     if missing.size == 0:
         return None, False
 
     if bool(missing[0]):
-        message = "Bybit OI не покрывает начало доступного окна Binance OI"
-        _add_warning(warnings, message + " — расчёт только по Binance")
+        message = f"{label} OI не покрывает начало доступного окна Binance OI"
+        _add_warning(warnings, message + f" — {label} исключён из агрегации")
         log.warning(message, extra={"tool": "OI Regime"})
         return None, False
 
@@ -1137,8 +1391,8 @@ def _prepare_bybit_grid(
         gap_mask[-1] = False
     for start, end in _consecutive_runs(gap_mask):
         if end - start + 1 >= 2:
-            message = "Bybit OI имеет пропуск >= 2 шагов"
-            _add_warning(warnings, message + " — расчёт только по Binance")
+            message = f"{label} OI имеет пропуск >= 2 шагов"
+            _add_warning(warnings, message + f" — {label} исключён из агрегации")
             log.warning(message, extra={"tool": "OI Regime"})
             return None, False
 
@@ -1149,12 +1403,12 @@ def _prepare_bybit_grid(
         filled.iloc[-1] = np.nan
     remaining = filled.isna().to_numpy()
     if remaining.size > 1 and bool(remaining[:-1].any()):
-        message = "Bybit OI содержит неустранимый пропуск"
-        _add_warning(warnings, message + " — расчёт только по Binance")
+        message = f"{label} OI содержит неустранимый пропуск"
+        _add_warning(warnings, message + f" — {label} исключён из агрегации")
         log.warning(message, extra={"tool": "OI Regime"})
         return None, False
 
-    result = by_grid.copy()
+    result = exchange_grid.copy()
     result.loc[filled.index] = filled.to_numpy(dtype=np.float64)
     return result, True
 
@@ -1205,27 +1459,55 @@ def align_raw(
             "Binance OI history ограничена 30 днями — часть старых баров без OI",
         )
 
-    by_grid, bybit_valid = _prepare_bybit_grid(
-        raw, grid, bin_valid_start, bin_valid_end, warnings
-    )
+    exchange_valid: dict[str, bool] = {"binance": bin_valid_start is not None}
+    secondary_grids: dict[str, pd.Series] = {}
+    for ex in SECONDARY_EXCHANGES:
+        if ex not in raw.enabled_exchanges:
+            continue
+        grid_ex, valid = _prepare_secondary_oi_grid(
+            ex, raw, grid, bin_valid_start, bin_valid_end, warnings
+        )
+        if valid and grid_ex is not None:
+            secondary_grids[ex] = grid_ex
+            exchange_valid[ex] = True
+    active_exchanges: list[str] = ["binance"] + [
+        ex for ex in SECONDARY_EXCHANGES if exchange_valid.get(ex, False)
+    ]
 
+    delta_columns: dict[str, pd.Series] = {}
+    oi_start_columns: dict[str, pd.Series] = {}
+    oi_end_columns: dict[str, pd.Series] = {}
     if open_times.size:
         bin_start = bin_grid.reindex(open_times).to_numpy(dtype=np.float64)
         bin_end = bin_grid.reindex(open_times + step_ms).to_numpy(dtype=np.float64)
         delta_bin = pd.Series(bin_end - bin_start, index=open_times, dtype=np.float64)
+        oi_start_columns["binance"] = pd.Series(
+            bin_start, index=open_times, dtype=np.float64
+        )
+        oi_end_columns["binance"] = pd.Series(bin_end, index=open_times, dtype=np.float64)
     else:
         delta_bin = pd.Series(dtype=np.float64)
+        oi_start_columns["binance"] = pd.Series(dtype=np.float64)
+        oi_end_columns["binance"] = pd.Series(dtype=np.float64)
+    delta_columns["binance"] = delta_bin
 
-    if bybit_valid and by_grid is not None and open_times.size:
-        by_start = by_grid.reindex(open_times).to_numpy(dtype=np.float64)
-        by_end = by_grid.reindex(open_times + step_ms).to_numpy(dtype=np.float64)
-        delta_by = pd.Series(by_end - by_start, index=open_times, dtype=np.float64)
-        total = pd.Series(np.nan, index=delta_bin.index, dtype=np.float64)
-        both = delta_bin.notna() & delta_by.notna()
-        total.loc[both] = delta_bin.loc[both] + delta_by.loc[both]
+    for ex, grid_ex in secondary_grids.items():
+        ex_start = grid_ex.reindex(open_times)
+        ex_end = grid_ex.reindex(open_times + step_ms)
+        delta_columns[ex] = (ex_end - ex_start).astype(np.float64)
+        oi_start_columns[ex] = ex_start.astype(np.float64)
+        oi_end_columns[ex] = ex_end.astype(np.float64)
+
+    # Сумма ΔOI по всем непустым валидным биржам на каждом баре.
+    # Набор бирж в числителе определяется ровно непустыми delta_oi_<ex>;
+    # engine использует тот же признак для знаменателя (_oi_total_start).
+    if open_times.size:
+        total = delta_columns["binance"].copy()
+        for ex in secondary_grids:
+            total = total.add(delta_columns[ex], fill_value=0.0)
+        total = total.where(delta_columns["binance"].notna())
     else:
-        delta_by = pd.Series(np.nan, index=delta_bin.index, dtype=np.float64)
-        total = delta_bin.copy()
+        total = pd.Series(dtype=np.float64)
 
     all_index = pd.Index(
         open_times.tolist() + ([live_ts] if live_ts is not None else [])
@@ -1255,15 +1537,16 @@ def align_raw(
         dtype=np.float64
     )
     result["delta_oi_binance"] = delta_bin.reindex(result.index).to_numpy(dtype=np.float64)
-    if bybit_valid and by_grid is not None:
-        result["oi_bybit_start"] = by_grid.reindex(result.index).to_numpy(dtype=np.float64)
-        result["oi_bybit_end"] = by_grid.reindex(result.index + step_ms).to_numpy(
-            dtype=np.float64
+    for ex in secondary_grids:
+        result[f"oi_{ex}_start"] = (
+            oi_start_columns[ex].reindex(result.index).to_numpy(dtype=np.float64)
         )
-    else:
-        result["oi_bybit_start"] = np.nan
-        result["oi_bybit_end"] = np.nan
-    result["delta_oi_bybit"] = delta_by.reindex(result.index).to_numpy(dtype=np.float64)
+        result[f"oi_{ex}_end"] = (
+            oi_end_columns[ex].reindex(result.index).to_numpy(dtype=np.float64)
+        )
+        result[f"delta_oi_{ex}"] = (
+            delta_columns[ex].reindex(result.index).to_numpy(dtype=np.float64)
+        )
     result["delta_oi_total"] = total.reindex(result.index).to_numpy(dtype=np.float64)
     result["is_live"] = False
     result["live_start_estimated"] = False
@@ -1280,6 +1563,9 @@ def align_raw(
         dtype=np.float64
     )
 
+    live_start_estimated_by_ex: dict[str, bool] = {
+        ex: False for ex in active_exchanges
+    }
     if live_ts is not None and live_ts in result.index:
         bin_start_live, est_bin = _asof_value(bin_series, live_ts)
         bin_end_live = raw.live_binance_oi if _finite(raw.live_binance_oi) else None
@@ -1288,35 +1574,42 @@ def align_raw(
             if bin_start_live is not None and bin_end_live is not None
             else None
         )
-        by_start_live: float | None = None
-        by_end_live: float | None = None
-        est_by = False
-        if bybit_valid and raw.bybit_oi is not None:
-            by_series = _normalize_snapshots(raw.bybit_oi, step_ms)
-            by_start_live, est_by = _asof_value(by_series, live_ts)
-            by_end_live = raw.live_bybit_oi if _finite(raw.live_bybit_oi) else None
-        live_by_delta = (
-            by_end_live - by_start_live
-            if by_start_live is not None and by_end_live is not None
-            else None
-        )
-        if bybit_valid:
-            live_total = (
-                live_bin_delta + live_by_delta
-                if live_bin_delta is not None and live_by_delta is not None
-                else None
-            )
-        else:
+        live_total: float | None = None
+        if live_bin_delta is not None:
             live_total = live_bin_delta
+        live_start_estimated_by_ex["binance"] = bool(est_bin)
 
         result.loc[live_ts, "is_live"] = True
-        result.loc[live_ts, "live_start_estimated"] = bool(est_bin or est_by)
         result.loc[live_ts, "oi_binance_start"] = bin_start_live
         result.loc[live_ts, "oi_binance_end"] = bin_end_live
         result.loc[live_ts, "delta_oi_binance"] = live_bin_delta
-        result.loc[live_ts, "oi_bybit_start"] = by_start_live
-        result.loc[live_ts, "oi_bybit_end"] = by_end_live
-        result.loc[live_ts, "delta_oi_bybit"] = live_by_delta
+
+        for ex in secondary_grids:
+            ex_series = _normalize_snapshots(raw.secondary_oi.get(ex), step_ms)
+            ex_start_live, est_ex = _asof_value(ex_series, live_ts)
+            live_pair = raw.live_secondary_oi.get(ex)
+            ex_end_live = (
+                float(live_pair[1])
+                if live_pair is not None and _finite(live_pair[1])
+                else None
+            )
+            ex_delta_live = (
+                ex_end_live - ex_start_live
+                if ex_start_live is not None and ex_end_live is not None
+                else None
+            )
+            live_start_estimated_by_ex[ex] = bool(est_ex)
+            result.loc[live_ts, f"oi_{ex}_start"] = ex_start_live
+            result.loc[live_ts, f"oi_{ex}_end"] = ex_end_live
+            result.loc[live_ts, f"delta_oi_{ex}"] = ex_delta_live
+            # Числитель live-бара включает ту же биржу, что дала непустую дельту;
+            # engine использует этот же признак для знаменателя ΔOI %.
+            if ex_delta_live is not None and live_total is not None:
+                live_total += ex_delta_live
+
+        result.loc[live_ts, "live_start_estimated"] = any(
+            live_start_estimated_by_ex.get(ex, False) for ex in active_exchanges
+        )
         result.loc[live_ts, "delta_oi_total"] = live_total
         result.loc[live_ts, "has_oi"] = live_total is not None
         result.loc[live_ts, "basis_pct"] = (
@@ -1331,8 +1624,10 @@ def align_raw(
 
     return AlignedRegimeData(
         frame=result,
-        bybit_valid=bybit_valid,
         spot_available=spot_ok,
+        exchange_valid=exchange_valid,
+        active_exchanges=active_exchanges,
+        live_start_estimated_by_ex=live_start_estimated_by_ex,
         warnings=warnings,
     )
 

@@ -554,10 +554,12 @@ QTabBar::tab:selected {{
         )
         self._add_row(
             context,
-            _badge_preview(_pill("Bybit-led")),
-            "Bybit-led",
-            "Не менее 75% прироста или сброса OI на этой свече пришлось на Bybit. "
-            "Фьючерсная дельта при этом считается по Binance Futures.",
+            _badge_preview(_pill("OKX-led")),
+            "Binance-led / Bybit-led / OKX-led",
+            "Одна биржа дала не менее 70% суммарного |ΔOI| при трёх активных биржах "
+            "(Binance + Bybit + OKX) или не менее 75% при двух. OI агрегируется по "
+            "активным биржам, настраивается в Настройках; фьючерсная дельта при этом "
+            "считается по Binance Futures.",
         )
         self._add_row(
             context,
@@ -661,9 +663,19 @@ QTabBar::tab:selected {{
             card,
             _MiniPreview("metric", "ΔOI\n%"),
             "ΔOI и ΔOI %",
-            "Изменение открытого интереса за свечу: сумма Binance и Bybit при доступности "
-            "Bybit, в монетах и в процентах от OI на открытии бара. Порог аномалии считается "
+            "Изменение открытого интереса за свечу: сумма по активным биржам "
+            "(Binance Futures + Bybit + OKX, настраивается в Настройках), в монетах "
+            "и в процентах от суммарного OI на открытии бара. Порог аномалии считается "
             "по робастному Z-score от ΔOI %.",
+        )
+        self._add_row(
+            card,
+            _MiniPreview("metric", "ATR\n14"),
+            "ATR(14) и × ATR",
+            "Wilder ATR(14) по закрытым свечам: TR = max(High-Low, |High-PrevClose|, "
+            "|Low-PrevClose|), сглаживание с alpha = 1/14. «× ATR» — отношение размаха "
+            "текущей свечи High-Low к предыдущему закрытому ATR; LIVE-свеча не "
+            "участвует в расчёте сглаживания.",
         )
         self._add_row(
             card,

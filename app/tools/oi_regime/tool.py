@@ -37,9 +37,20 @@ def _params_from_settings(settings: AppSettings, timeframe: str | None = None) -
         spot_dead_max_z=settings.oi_spot_dead_max_z,
         spot_dead_extreme_oi_z=settings.oi_spot_dead_extreme_oi_z,
         use_bybit=settings.oi_use_bybit,
+        use_okx=settings.oi_use_okx,
         visible_bars=settings.oi_visible_bars,
         tz_offset_hours=settings.tz_offset_hours,
     )
+
+
+def _enabled_exchanges(params: RegimeParams) -> tuple[str, ...]:
+    """Набор запрошенных бирж в фиксированном порядке: Binance — мастер-сетка."""
+    enabled = ["binance"]
+    if params.use_bybit:
+        enabled.append("bybit")
+    if params.use_okx:
+        enabled.append("okx")
+    return tuple(enabled)
 
 
 @register_tool
@@ -114,7 +125,7 @@ class OIRegimeTool(BaseTool):
         symbol = self.context.config.current.symbol
         params = replace(page.current_params, timeframe=page.current_timeframe)
         cache_key = (symbol, params.timeframe)
-        cached = self._cache.get(cache_key)
+        cached = self._get_cached_raw(cache_key, params)
         if mode == "live" and cached is None:
             mode = "full"
         if mode != "live" and manual:
@@ -149,6 +160,16 @@ class OIRegimeTool(BaseTool):
             return
         current = self.context.config.current.symbol
         if bundle.symbol != current or bundle.timeframe != self.page.current_timeframe:
+            if self._page_visible:
+                QTimer.singleShot(50, lambda: self.start_fetch("full", manual=False))
+            return
+
+        # Если набор бирж успел измениться во время запроса, не показываем и не
+        # кэшируем снимок со старым составом источников — сразу грузим новый.
+        desired = _enabled_exchanges(
+            replace(self.page.current_params, timeframe=bundle.timeframe)
+        )
+        if desired != tuple(raw.enabled_exchanges):
             if self._page_visible:
                 QTimer.singleShot(50, lambda: self.start_fetch("full", manual=False))
             return
@@ -223,6 +244,18 @@ class OIRegimeTool(BaseTool):
     def _trim_cache(self) -> None:
         while len(self._cache) > _CACHE_LIMIT:
             self._cache.pop(next(iter(self._cache)))
+
+    def _get_cached_raw(
+        self, cache_key: tuple[str, str], params: RegimeParams
+    ) -> RawRegimeData | None:
+        """Кэш валиден только для того же набора активных бирж OI."""
+        cached = self._cache.get(cache_key)
+        if cached is None:
+            return None
+        if tuple(cached.enabled_exchanges) != _enabled_exchanges(params):
+            self._cache.pop(cache_key, None)
+            return None
+        return cached
 
     @staticmethod
     def _event_key(bundle: RegimeBundle, ts_ms: int, regime_key: str) -> str:
@@ -326,7 +359,9 @@ class OIRegimeTool(BaseTool):
             tool="OI Regime",
             logger_name="app.services.oi_regime.fetcher",
         )
-        cached = self._cache.get((self.context.config.current.symbol, timeframe))
+        cached = self._get_cached_raw(
+            (self.context.config.current.symbol, timeframe), params
+        )
         if cached is not None:
             try:
                 bundle = build_bundle(cached, params, cached.symbol)
@@ -353,7 +388,7 @@ class OIRegimeTool(BaseTool):
             z_window=int(payload.get("z_window", self.page.current_params.z_window)),
         )
         symbol = self.context.config.current.symbol
-        cached = self._cache.get((symbol, params.timeframe))
+        cached = self._get_cached_raw((symbol, params.timeframe), params)
         if cached is None:
             if self._page_visible:
                 self.start_fetch("full", manual=False)
@@ -397,7 +432,9 @@ class OIRegimeTool(BaseTool):
             self._schedule_live()
             return
         symbol = self.context.config.current.symbol
-        cached = self._cache.get((symbol, self.page.current_timeframe))
+        cached = self._get_cached_raw(
+            (symbol, self.page.current_timeframe), self.page.current_params
+        )
         if cached is None:
             self.start_fetch("full", manual=False)
         self._schedule_live()
@@ -421,21 +458,25 @@ class OIRegimeTool(BaseTool):
         # Live/фильтры восстанавливаются из config.json внутри set_defaults.
 
         symbol_changed = settings.symbol != previous.symbol
-        bybit_changed = settings.oi_use_bybit != previous.oi_use_bybit
+        exchanges_changed = (
+            settings.oi_use_bybit != previous.oi_use_bybit
+            or settings.oi_use_okx != previous.oi_use_okx
+        )
         cache_key = (settings.symbol, target_tf)
-        cached = self._cache.get(cache_key)
+        cached = self._get_cached_raw(cache_key, params)
         cache_too_small = cached is None or len(cached.fut_klines) < (
             settings.oi_visible_bars + settings.oi_z_window + 10
         )
 
-        if symbol_changed:
+        if symbol_changed or exchanges_changed:
             self._cache.clear()
+        if symbol_changed:
             self._bundle = None
             self._seen_events.clear()
 
-        if symbol_changed or tf_changed or bybit_changed or cache_too_small:
+        if symbol_changed or tf_changed or exchanges_changed or cache_too_small:
             if self._page_visible:
-                self.start_fetch("full", manual=tf_changed)
+                self.start_fetch("full", manual=tf_changed or exchanges_changed)
             else:
                 self._bundle = None
                 self._schedule_live()

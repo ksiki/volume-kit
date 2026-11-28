@@ -80,6 +80,7 @@
   "OI_SPOT_DEAD_MAX_Z": 0.3,
   "OI_SPOT_DEAD_EXTREME_OI_Z": 2.5,
   "OI_USE_BYBIT": true,
+  "OI_USE_OKX": true,
   "OI_VISIBLE_BARS": 200,
   "OI_REFRESH_SEC": 20,
   "OI_ONLY_ABSORPTION": false,

@@ -36,6 +36,7 @@ class RegimeParams:
     multi_bar_threshold_delta: float = 1.8
     trap_level_min_z: float = 2.5
     use_bybit: bool = True
+    use_okx: bool = True
     visible_bars: int = 200
     tz_offset_hours: int = 0
 
@@ -55,12 +56,6 @@ class CandleBar:
     fut_delta: float
     spot_available: bool
     spot_delta: float | None
-    oi_binance_start: float | None
-    oi_binance_end: float | None
-    oi_bybit_start: float | None
-    oi_bybit_end: float | None
-    delta_oi_binance: float | None
-    delta_oi_bybit: float | None
     delta_oi_total: float | None
     is_live: bool
     live_start_estimated: bool
@@ -81,8 +76,12 @@ class CandleBar:
 
     # ---- расширенный контекст (Этап 1.2) ----
     delta_oi_pct: float | None = None
-    bybit_oi_share: float | None = None
-    is_bybit_led: bool = False
+    delta_oi_by_exchange: dict[str, float] = field(default_factory=dict)
+    oi_start_by_exchange: dict[str, float] = field(default_factory=dict)
+    oi_end_by_exchange: dict[str, float] = field(default_factory=dict)
+    dominant_exchange: str | None = None
+    dominant_share: float | None = None
+    is_single_exchange_led: bool = False
     live_progress: float = 1.0
     range_ratio: float | None = None
     is_standalone_absorption: bool = False
@@ -91,6 +90,10 @@ class CandleBar:
     multi_regime_key: str | None = None
     z_multi_doi: float | None = None
     z_multi_delta: float | None = None
+    # ---- волатильность: Wilder ATR(14) по закрытым свечам ----
+    atr14: float | None = None
+    atr14_pct: float | None = None
+    range_atr: float | None = None
 
 
 @dataclass
@@ -110,8 +113,6 @@ class AnomalyEvent:
     fut_delta: float
     spot_delta: float | None
     delta_oi_total: float | None
-    delta_oi_binance: float | None
-    delta_oi_bybit: float | None
     spot_status: str
     is_absorption: bool
     absorption_reason: str | None
@@ -119,11 +120,16 @@ class AnomalyEvent:
 
     # ---- контекст события (Этап 1.2) ----
     delta_oi_pct: float | None = None
-    is_bybit_led: bool = False
+    delta_oi_by_exchange: dict[str, float] = field(default_factory=dict)
+    dominant_exchange: str | None = None
+    dominant_share: float | None = None
+    is_single_exchange_led: bool = False
     live_progress: float = 1.0
     basis_pct: float | None = None
     funding_rate: float | None = None
     is_standalone_absorption: bool = False
+    atr14: float | None = None
+    range_atr: float | None = None
 
     @property
     def strength(self) -> float:
@@ -210,8 +216,10 @@ class RegimeBundle:
     anomaly_count: int = 0
     warmup_rows: int = 0
     spot_available: bool = False
-    bybit_available: bool = False
+    active_exchanges: list[str] = field(default_factory=lambda: ["binance"])
     sources_label: str = "Binance only"
+    current_atr14: float | None = None
+    current_atr14_pct: float | None = None
     warnings: list[str] = field(default_factory=list)
     updated_at: str = ""
     updated_at_ms: int = 0

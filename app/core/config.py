@@ -66,6 +66,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "OI_SPOT_DEAD_MAX_Z": 0.3,
     "OI_SPOT_DEAD_EXTREME_OI_Z": 2.5,
     "OI_USE_BYBIT": True,
+    "OI_USE_OKX": True,
     "OI_VISIBLE_BARS": 200,
     "OI_REFRESH_SEC": 20,
     # OI & Delta Regime: состояние тулбара (единый источник правды для страницы настроек)
@@ -224,6 +225,7 @@ def normalize_config(data: dict[str, Any]) -> dict[str, Any]:
             _clamp(float(merged["OI_SPOT_DEAD_EXTREME_OI_Z"]), 1.0, 6.0)
         ),
         "OI_USE_BYBIT": bool(merged["OI_USE_BYBIT"]),
+        "OI_USE_OKX": bool(merged["OI_USE_OKX"]),
         "OI_VISIBLE_BARS": int(_clamp(int(merged["OI_VISIBLE_BARS"]), 60, 400)),
         "OI_REFRESH_SEC": int(_clamp(int(merged["OI_REFRESH_SEC"]), 0, 120)),
         "OI_ONLY_ABSORPTION": bool(merged["OI_ONLY_ABSORPTION"]),
@@ -276,6 +278,7 @@ class AppSettings:
     oi_spot_dead_max_z: float
     oi_spot_dead_extreme_oi_z: float
     oi_use_bybit: bool
+    oi_use_okx: bool
     oi_visible_bars: int
     oi_refresh_sec: int
     oi_only_absorption: bool
@@ -327,6 +330,7 @@ class AppSettings:
             oi_spot_dead_max_z=float(merged["OI_SPOT_DEAD_MAX_Z"]),
             oi_spot_dead_extreme_oi_z=float(merged["OI_SPOT_DEAD_EXTREME_OI_Z"]),
             oi_use_bybit=bool(merged["OI_USE_BYBIT"]),
+            oi_use_okx=bool(merged["OI_USE_OKX"]),
             oi_visible_bars=int(merged["OI_VISIBLE_BARS"]),
             oi_refresh_sec=int(merged["OI_REFRESH_SEC"]),
             oi_only_absorption=bool(merged["OI_ONLY_ABSORPTION"]),

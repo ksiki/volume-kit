@@ -884,6 +884,16 @@ QLabel#OiStatusBadge[state="error"] {{
     border-color: #FECACA;
     color: #B91C1C;
 }}
+QLabel#OiAtrBadge {{
+    background-color: {PALETTE["surface_alt"]};
+    border: 1px solid {PALETTE["border"]};
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-family: "{FONT_FAMILY_MONO}", "Consolas", monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: {PALETTE["text_muted"]};
+}}
 QFrame#OiChartPanel, QFrame#OiFeedPanel {{
     background-color: {PALETTE["surface"]};
     border: 1px solid {PALETTE["border"]};
